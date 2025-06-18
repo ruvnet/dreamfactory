@@ -1,0 +1,73 @@
+# DreamFactory API Server Configuration
+
+server:
+  host: "127.0.0.1"
+  port: 8080
+  timeout_seconds: 30
+  max_request_size: 16777216  # 16MB
+  worker_threads: null  # Use default
+
+database:
+  default_connection: "default"
+  connections:
+    default:
+      driver: "sqlite"
+      host: "localhost"
+      port: 5432
+      database: "dreamfactory.db"
+      username: "df_admin"
+      password: "df_admin"
+      ssl_mode: null
+      max_connections: 10
+
+cache:
+  driver: "memory"  # Options: memory, redis
+  host: "localhost"
+  port: 6379
+  database: 0
+  password: null
+  prefix: "df:"
+  ttl_seconds: 3600  # 1 hour
+
+email:
+  driver: "smtp"
+  host: "localhost"
+  port: 587
+  username: null
+  password: null
+  encryption: "tls"  # Options: tls, ssl, none
+  from_address: "noreply@dreamfactory.local"
+  from_name: "DreamFactory"
+
+security:
+  jwt_secret: "your-super-secret-jwt-key-change-this-in-production"
+  jwt_ttl_seconds: 86400  # 24 hours
+  bcrypt_rounds: 12
+  enable_rate_limiting: true
+  rate_limit_requests: 100
+  rate_limit_window_seconds: 60  # 1 minute
+
+cors:
+  enabled: true
+  allowed_origins:
+    - "*"
+  allowed_methods:
+    - "GET"
+    - "POST"
+    - "PUT" 
+    - "DELETE"
+    - "PATCH"
+    - "OPTIONS"
+  allowed_headers:
+    - "Authorization"
+    - "Content-Type"
+    - "X-Requested-With"
+  max_age_seconds: 3600
+
+logging:
+  level: "info"  # Options: trace, debug, info, warn, error
+  format: "json"  # Options: json, pretty
+  output: "stdout"  # Options: stdout, file
+  file_path: null
+  rotate_size_mb: 100
+  rotate_keep_files: 10
