@@ -1,0 +1,72 @@
+[workspace]
+resolver = "2"
+members = [
+    "df-core",
+    "df-auth", 
+    "df-database",
+    "df-files",
+    "df-cache",
+    "df-email",
+    "df-api",
+    "df-server"
+]
+
+[workspace.dependencies]
+# Async runtime and web framework
+tokio = { version = "1.35", features = ["full"] }
+axum = { version = "0.7", features = ["macros", "multipart", "ws"] }
+tower = { version = "0.4", features = ["full"] }
+tower-http = { version = "0.5", features = ["full"] }
+hyper = { version = "1.0", features = ["full"] }
+
+# Database
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "mysql", "sqlite", "chrono", "uuid", "json"] }
+sea-orm = { version = "0.12", features = ["sqlx-postgres", "sqlx-mysql", "sqlx-sqlite", "runtime-tokio-rustls", "macros"] }
+redis = { version = "0.24", features = ["tokio-comp", "connection-manager"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# Authentication and security
+jsonwebtoken = "9.2"
+argon2 = "0.5"
+uuid = { version = "1.6", features = ["v4", "serde"] }
+
+# HTTP client
+reqwest = { version = "0.11", features = ["json", "multipart", "stream"] }
+
+# File operations and cloud storage
+object_store = { version = "0.8", features = ["aws", "azure", "gcp"] }
+aws-config = "1.0"
+aws-sdk-s3 = "1.0"
+
+# Configuration
+figment = { version = "0.10", features = ["yaml", "toml", "json", "env"] }
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-opentelemetry = "0.22"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Email
+lettre = { version = "0.11", features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
+
+# Template engine
+handlebars = "4.5"
+
+# Validation
+validator = { version = "0.16", features = ["derive"] }
+
+# Development and testing
+mockall = "0.12"
+wiremock = "0.5"
+criterion = { version = "0.5", features = ["html_reports"] }

@@ -1,0 +1,67 @@
+[package]
+name = "df-auth"
+version = "0.1.0"
+edition = "2021"
+description = "DreamFactory Authentication and Authorization System"
+
+[dependencies]
+# Core async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+# Web framework
+axum = { version = "0.7", features = ["macros"] }
+tower = { version = "0.4", features = ["util"] }
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Authentication
+jsonwebtoken = "9.3"
+argon2 = "0.5"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+
+# Database
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "mysql", "postgres", "chrono", "uuid"] }
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Environment
+dotenv = "0.15"
+
+# Validation
+validator = { version = "0.18", features = ["derive"] }
+
+# Random generation
+rand = "0.8"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# HTTP client for testing
+reqwest = { version = "0.11", features = ["json"] }
+
+[dev-dependencies]
+# Testing
+tokio-test = "0.4"
+mockall = "0.12"
+rstest = "0.18"
+
+# Test utilities
+serde_json = "1.0"
+uuid = { version = "1.0", features = ["v4"] }
+
+[lib]
+name = "df_auth"
+path = "src/lib.rs"
+
+[[bin]]
+name = "df-auth-server"
+path = "src/main.rs"
