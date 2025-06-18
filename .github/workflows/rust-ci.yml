@@ -1,0 +1,149 @@
+name: DreamFactory Rust CI
+
+on:
+  push:
+    branches: [ dreamfactory-rust, main ]
+    paths: 
+      - 'dreamfactory-rust/**'
+      - '.github/workflows/rust-ci.yml'
+  pull_request:
+    branches: [ dreamfactory-rust, main ]
+    paths:
+      - 'dreamfactory-rust/**'
+      - '.github/workflows/rust-ci.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: dreamfactory_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+          
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+        
+    - name: Cache dependencies
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: dreamfactory-rust
+        
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libpq-dev sqlite3 libsqlite3-dev
+        
+    - name: Set up database
+      env:
+        DATABASE_URL: postgres://postgres:password@localhost:5432/dreamfactory_test
+      run: |
+        # Create test database
+        PGPASSWORD=password createdb -h localhost -U postgres dreamfactory_test || true
+        
+    - name: Check formatting
+      run: |
+        cd dreamfactory-rust
+        cargo fmt --all -- --check
+        
+    - name: Lint with clippy
+      run: |
+        cd dreamfactory-rust
+        cargo clippy --all-targets --all-features -- -D warnings
+        
+    - name: Run tests
+      env:
+        DATABASE_URL: postgres://postgres:password@localhost:5432/dreamfactory_test
+        REDIS_URL: redis://localhost:6379
+      run: |
+        cd dreamfactory-rust
+        cargo test --workspace --verbose
+        
+    - name: Build release
+      run: |
+        cd dreamfactory-rust
+        cargo build --release --verbose
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - name: Install cargo-audit
+      run: cargo install cargo-audit
+    - name: Run security audit
+      run: |
+        cd dreamfactory-rust
+        cargo audit
+
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: dreamfactory_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+          
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+      
+    - name: Install tarpaulin
+      run: cargo install cargo-tarpaulin
+      
+    - name: Set up database
+      env:
+        DATABASE_URL: postgres://postgres:password@localhost:5432/dreamfactory_test
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libpq-dev postgresql-client
+        PGPASSWORD=password createdb -h localhost -U postgres dreamfactory_test || true
+        
+    - name: Run coverage
+      env:
+        DATABASE_URL: postgres://postgres:password@localhost:5432/dreamfactory_test
+      run: |
+        cd dreamfactory-rust
+        cargo tarpaulin --workspace --verbose --xml
+        
+    - name: Upload to codecov.io
+      uses: codecov/codecov-action@v3
+      with:
+        file: dreamfactory-rust/cobertura.xml
