@@ -1,4 +1,4 @@
-use crate::{AuthError, AuthContext};
+use crate::AuthContext;
 use axum::{
     extract::{Request, Path},
     http::StatusCode,

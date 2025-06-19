@@ -1,10 +1,9 @@
 use df_database::*;
 use serde_json::json;
-use std::collections::HashMap;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::init();
+    tracing_subscriber::fmt::init();
 
     println!("🚀 DreamFactory Database Layer Test");
     println!("=====================================");
@@ -235,7 +234,7 @@ async fn test_computed_fields() -> Result<(), DatabaseError> {
     
     // Add computed fields
     {
-        let mut evaluator = provider.computed_field_evaluator.write().await;
+        let mut evaluator = provider.computed_field_evaluator().write().await;
         
         // Full name computed field
         evaluator.add_computed_field("employees", ComputedField {

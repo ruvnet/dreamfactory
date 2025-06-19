@@ -66,7 +66,7 @@ impl PostgreSqlProvider {
     pub async fn get_version(&self) -> Result<String, DatabaseError> {
         let query = "SELECT version() as version";
         let result = crate::query::SqlExecutor::execute_select(
-            &self.inner.pool,
+            self.inner.get_pool(),
             query,
             &[],
         ).await?;
@@ -85,7 +85,7 @@ impl PostgreSqlProvider {
     pub async fn get_database_size(&self, database: &str) -> Result<i64, DatabaseError> {
         let query = "SELECT pg_database_size($1) as size";
         let result = crate::query::SqlExecutor::execute_select(
-            &self.inner.pool,
+            self.inner.get_pool(),
             query,
             &[serde_json::Value::String(database.to_string())],
         ).await?;
@@ -103,7 +103,7 @@ impl PostgreSqlProvider {
     pub async fn get_table_size(&self, table: &str) -> Result<i64, DatabaseError> {
         let query = "SELECT pg_total_relation_size($1) as size";
         let result = crate::query::SqlExecutor::execute_select(
-            &self.inner.pool,
+            self.inner.get_pool(),
             query,
             &[serde_json::Value::String(table.to_string())],
         ).await?;
@@ -141,7 +141,7 @@ impl PostgreSqlProvider {
         "#;
 
         let result = crate::query::SqlExecutor::execute_select(
-            &self.inner.pool,
+            self.inner.get_pool(),
             query,
             &[serde_json::Value::String(table.to_string())],
         ).await?;
@@ -195,7 +195,7 @@ impl PostgreSqlProvider {
         "#;
 
         let result = crate::query::SqlExecutor::execute_select(
-            &self.inner.pool,
+            self.inner.get_pool(),
             query,
             &[serde_json::Value::String(table.to_string())],
         ).await?;
@@ -237,7 +237,7 @@ impl PostgreSqlProvider {
             ORDER BY schema_name
         "#;
 
-        let result = crate::query::SqlExecutor::execute_select(&self.inner.pool, query, &[]).await?;
+        let result = crate::query::SqlExecutor::execute_select(self.inner.get_pool(), query, &[]).await?;
         
         Ok(result
             .into_iter()
@@ -257,13 +257,13 @@ impl PostgreSqlProvider {
             ORDER BY extname
         "#;
 
-        crate::query::SqlExecutor::execute_select(&self.inner.pool, query, &[]).await
+        crate::query::SqlExecutor::execute_select(self.inner.get_pool(), query, &[]).await
     }
 
     /// Execute PostgreSQL-specific ANALYZE on a table
     pub async fn analyze_table(&self, table: &str) -> Result<(), DatabaseError> {
         let query = format!("ANALYZE {}", table);
-        crate::query::SqlExecutor::execute_modify(&self.inner.pool, &query, &[]).await?;
+        crate::query::SqlExecutor::execute_modify(self.inner.get_pool(), &query, &[]).await?;
         Ok(())
     }
 
@@ -274,7 +274,7 @@ impl PostgreSqlProvider {
         } else {
             format!("VACUUM {}", table)
         };
-        crate::query::SqlExecutor::execute_modify(&self.inner.pool, &query, &[]).await?;
+        crate::query::SqlExecutor::execute_modify(self.inner.get_pool(), &query, &[]).await?;
         Ok(())
     }
 
@@ -295,7 +295,7 @@ impl PostgreSqlProvider {
         "#;
 
         let result = crate::query::SqlExecutor::execute_select(
-            &self.inner.pool,
+            self.inner.get_pool(),
             query,
             &[serde_json::Value::String(table.to_string())],
         ).await?;
@@ -319,7 +319,7 @@ impl PostgreSqlProvider {
             WHERE pid = pg_backend_pid()
         "#;
 
-        let result = crate::query::SqlExecutor::execute_select(&self.inner.pool, query, &[]).await?;
+        let result = crate::query::SqlExecutor::execute_select(self.inner.get_pool(), query, &[]).await?;
         
         result.into_iter().next().ok_or_else(|| DatabaseError::Query {
             message: "Failed to get connection information".to_string(),

@@ -19,29 +19,21 @@ use async_trait::async_trait;
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::{
     error::SdkError,
-    operation::{
-        get_object::GetObjectError,
-        head_object::HeadObjectError,
-        put_object::PutObjectError,
-    },
-    primitives::{ByteStream, SdkBody},
-    types::{CompletedMultipartUpload, CompletedPart, ObjectCannedAcl},
+    primitives::{ByteStream, DateTime},
+    types::{CompletedMultipartUpload, CompletedPart},
     Client as S3Client,
 };
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
-use futures::{stream, Stream, StreamExt, TryStreamExt};
+use chrono::{DateTime as ChronoDateTime, Utc};
+use futures::TryStreamExt;
 use object_store::{
     aws::{AmazonS3, AmazonS3Builder},
-    path::Path as ObjectPath,
-    ObjectStore,
 };
 use std::{
     collections::HashMap,
-    pin::Pin,
-    sync::{Arc, Mutex},
-    time::SystemTime,
+    sync::{Arc, Mutex as StdMutex},
 };
+use tokio::sync::Mutex;
 use url::Url;
 
 /// AWS S3 storage provider
@@ -51,7 +43,7 @@ pub struct S3StorageProvider {
     client: Option<S3Client>,
     object_store: Option<Arc<AmazonS3>>,
     initialized: bool,
-    statistics: Arc<Mutex<ProviderStatistics>>,
+    statistics: Arc<StdMutex<ProviderStatistics>>,
     multipart_uploads: Arc<Mutex<HashMap<String, MultipartUpload>>>,
 }
 
@@ -73,7 +65,7 @@ impl S3StorageProvider {
             client: None,
             object_store: None,
             initialized: false,
-            statistics: Arc::new(Mutex::new(ProviderStatistics::default())),
+            statistics: Arc::new(StdMutex::new(ProviderStatistics::default())),
             multipart_uploads: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -133,7 +125,7 @@ impl S3StorageProvider {
         &self,
         path: &str,
         size: i64,
-        last_modified: Option<DateTime<Utc>>,
+        last_modified: Option<ChronoDateTime<Utc>>,
         etag: Option<String>,
         content_type: Option<String>,
         metadata: Option<HashMap<String, String>>,
@@ -171,7 +163,7 @@ impl S3StorageProvider {
 
     /// Record operation statistics
     fn record_operation(&self, success: bool, bytes_transferred: Option<u64>) {
-        if let Ok(mut stats) = self.statistics.lock() {
+        if let Ok(mut stats) = self.statistics.try_lock() {
             stats.total_operations += 1;
             if success {
                 stats.successful_operations += 1;
@@ -199,7 +191,7 @@ impl S3StorageProvider {
                     },
                     _ => FileServiceError::CloudStorageError {
                         provider: "S3".to_string(),
-                        message: service_error.to_string(),
+                        message: format!("{:?}", service_error),
                     },
                 }
             }
@@ -233,11 +225,13 @@ impl StorageProvider for S3StorageProvider {
             &self.s3_config.access_key_id,
             &self.s3_config.secret_access_key,
         ) {
-            let credentials = aws_config::environment::credentials::EnvironmentVariableCredentialsProvider::default()
-                .try_into()
-                .map_err(|e| FileServiceError::ConfigError {
-                    message: format!("Failed to create credentials: {}", e),
-                })?;
+            let credentials = aws_sdk_s3::config::Credentials::new(
+                access_key,
+                secret_key,
+                self.s3_config.session_token.clone(),
+                None,
+                "configured"
+            );
 
             aws_config_builder = aws_config_builder.credentials_provider(credentials);
         }
@@ -295,9 +289,8 @@ impl StorageProvider for S3StorageProvider {
 
     async fn shutdown(&mut self) -> FileResult<()> {
         // Clear any in-progress multipart uploads
-        if let Ok(mut uploads) = self.multipart_uploads.lock() {
-            uploads.clear();
-        }
+        let mut uploads = self.multipart_uploads.lock().await;
+        uploads.clear();
 
         self.client = None;
         self.object_store = None;
@@ -378,12 +371,10 @@ impl StorageProvider for S3StorageProvider {
     }
 
     async fn get_statistics(&self) -> FileResult<ProviderStatistics> {
-        self.statistics
-            .lock()
-            .map(|stats| stats.clone())
-            .map_err(|_| FileServiceError::InternalError {
-                message: "Failed to get statistics".to_string(),
-            })
+        let stats = self.statistics.lock().map_err(|_| FileServiceError::InternalError {
+            message: "Failed to acquire statistics lock".to_string(),
+        })?;
+        Ok(stats.clone())
     }
 
     async fn reload_config(&mut self, config: FileServiceConfig) -> FileResult<()> {
@@ -532,10 +523,13 @@ impl FileService for S3StorageProvider {
         }
 
         // Execute upload
-        let result = put_request.send().await.map_err(|e| {
-            self.record_operation(false, None);
-            self.map_s3_error(e, &s3_key)
-        })?;
+        let _result = match put_request.send().await {
+            Ok(result) => result,
+            Err(e) => {
+                self.record_operation(false, None);
+                return Err(self.map_s3_error(e, &s3_key));
+            }
+        };
 
         let bytes_transferred = content.len() as u64;
         self.record_operation(true, Some(bytes_transferred));
@@ -548,11 +542,11 @@ impl FileService for S3StorageProvider {
         &self,
         path: &str,
         stream: FileStream,
-        size: Option<u64>,
+        _size: Option<u64>,
         options: UploadOptions,
     ) -> FileResult<FileOperationResult> {
         let normalized_path = self.validate_path(path)?;
-        let s3_key = self.get_s3_key(&normalized_path);
+        let _s3_key = self.get_s3_key(&normalized_path);
 
         if !self.is_ready() {
             return Err(FileServiceError::ServiceUnavailable {
@@ -562,15 +556,16 @@ impl FileService for S3StorageProvider {
 
         // For streaming uploads, we'll collect the stream into bytes first
         // In a production implementation, you might want to use multipart upload for large streams
-        let chunks: Result<Vec<Bytes>, std::io::Error> = stream.collect().await;
+        let chunks: Result<Vec<Bytes>, std::io::Error> = stream.try_collect().await;
         let chunks = chunks.map_err(|e| FileServiceError::IoError {
             message: format!("Failed to read stream: {}", e),
         })?;
 
-        let content = chunks.into_iter().fold(Bytes::new(), |mut acc, chunk| {
-            acc.extend_from_slice(&chunk);
-            acc
-        });
+        let mut content_vec = Vec::new();
+        for chunk in chunks {
+            content_vec.extend_from_slice(&chunk);
+        }
+        let content = Bytes::from(content_vec);
 
         self.upload_bytes(&normalized_path, content, options).await
     }
@@ -613,21 +608,24 @@ impl FileService for S3StorageProvider {
 
         if let Some(if_modified_since) = options.if_modified_since {
             get_request = get_request.if_modified_since(
-                aws_smithy_types::DateTime::from_secs(if_modified_since.timestamp())
+                DateTime::from_secs(if_modified_since.timestamp())
             );
         }
 
-        let result = get_request.send().await.map_err(|e| {
-            self.record_operation(false, None);
-            self.map_s3_error(e, &s3_key)
-        })?;
+        let result = match get_request.send().await {
+            Ok(result) => result,
+            Err(e) => {
+                self.record_operation(false, None);
+                return Err(self.map_s3_error(e, &s3_key));
+            }
+        };
 
         // Get object metadata
         let content_length = result.content_length().unwrap_or(0);
         let content_type = result.content_type().unwrap_or("application/octet-stream").to_string();
         let etag = result.e_tag().map(|s| s.to_string());
         let last_modified = result.last_modified().map(|dt| {
-            DateTime::from_timestamp(dt.secs(), 0).unwrap_or_else(Utc::now)
+            ChronoDateTime::from_timestamp(dt.secs(), dt.subsec_nanos()).unwrap_or_else(Utc::now)
         });
 
         // Collect metadata
@@ -635,7 +633,6 @@ impl FileService for S3StorageProvider {
 
         // Read content
         let body = result.body.collect().await.map_err(|e| {
-            self.record_operation(false, None);
             FileServiceError::IoError {
                 message: format!("Failed to read S3 object body: {}", e),
             }
@@ -643,6 +640,7 @@ impl FileService for S3StorageProvider {
 
         let content = Bytes::from(body.into_bytes());
         let bytes_transferred = content.len() as u64;
+        self.record_operation(true, Some(bytes_transferred));
 
         // Create file info
         let file_info = self.create_file_info_from_s3_object(
@@ -653,8 +651,6 @@ impl FileService for S3StorageProvider {
             Some(content_type),
             Some(metadata),
         );
-
-        self.record_operation(true, Some(bytes_transferred));
 
         Ok((content, file_info))
     }
@@ -676,22 +672,25 @@ impl FileService for S3StorageProvider {
         let client = self.client.as_ref().unwrap();
 
         // First get object metadata
-        let head_result = client
+        let head_result = match client
             .head_object()
             .bucket(&self.s3_config.bucket)
             .key(&s3_key)
             .send()
             .await
-            .map_err(|e| {
+        {
+            Ok(result) => result,
+            Err(e) => {
                 self.record_operation(false, None);
-                self.map_s3_error(e, &s3_key)
-            })?;
+                return Err(self.map_s3_error(e, &s3_key));
+            }
+        };
 
         let content_length = head_result.content_length().unwrap_or(0);
         let content_type = head_result.content_type().unwrap_or("application/octet-stream").to_string();
         let etag = head_result.e_tag().map(|s| s.to_string());
         let last_modified = head_result.last_modified().map(|dt| {
-            DateTime::from_timestamp(dt.secs(), 0).unwrap_or_else(Utc::now)
+            ChronoDateTime::from_timestamp(dt.secs(), dt.subsec_nanos()).unwrap_or_else(Utc::now)
         });
         let metadata = head_result.metadata().cloned().unwrap_or_default();
 
@@ -721,17 +720,26 @@ impl FileService for S3StorageProvider {
             get_request = get_request.range(range);
         }
 
-        let result = get_request.send().await.map_err(|e| {
-            self.record_operation(false, None);
-            self.map_s3_error(e, &s3_key)
-        })?;
+        let result = match get_request.send().await {
+            Ok(result) => result,
+            Err(e) => {
+                self.record_operation(false, None);
+                return Err(self.map_s3_error(e, &s3_key));
+            }
+        };
 
         // Convert S3 body to our FileStream
-        let stream: FileStream = Box::pin(
-            result.body
-                .map_ok(|chunk| Bytes::from(chunk.into_bytes()))
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-        );
+        // Note: ByteStream API has changed, need to collect bytes and create stream
+        let body_bytes = result.body.collect().await.map_err(|e| {
+            FileServiceError::IoError {
+                message: format!("Failed to collect S3 body: {}", e),
+            }
+        })?;
+        
+        let bytes = body_bytes.into_bytes();
+        let stream: FileStream = Box::pin(futures::stream::once(async move {
+            Ok(bytes)
+        }));
 
         self.record_operation(true, None);
 
@@ -762,7 +770,7 @@ impl FileService for S3StorageProvider {
         let content_type = result.content_type().unwrap_or("application/octet-stream").to_string();
         let etag = result.e_tag().map(|s| s.to_string());
         let last_modified = result.last_modified().map(|dt| {
-            DateTime::from_timestamp(dt.secs(), 0).unwrap_or_else(Utc::now)
+            ChronoDateTime::from_timestamp(dt.secs(), dt.subsec_nanos()).unwrap_or_else(Utc::now)
         });
         let metadata = result.metadata().cloned().unwrap_or_default();
 
@@ -827,16 +835,19 @@ impl FileService for S3StorageProvider {
             });
         }
 
-        client
+        match client
             .delete_object()
             .bucket(&self.s3_config.bucket)
             .key(&s3_key)
             .send()
             .await
-            .map_err(|e| {
+        {
+            Ok(_) => {},
+            Err(e) => {
                 self.record_operation(false, None);
-                self.map_s3_error(e, &s3_key)
-            })?;
+                return Err(self.map_s3_error(e, &s3_key));
+            }
+        };
 
         self.record_operation(true, None);
 
@@ -872,17 +883,20 @@ impl FileService for S3StorageProvider {
 
         let copy_source = format!("{}/{}", self.s3_config.bucket, source_key);
 
-        let result = client
+        let _result = match client
             .copy_object()
             .bucket(&self.s3_config.bucket)
             .key(&dest_key)
             .copy_source(&copy_source)
             .send()
             .await
-            .map_err(|e| {
+        {
+            Ok(result) => result,
+            Err(e) => {
                 self.record_operation(false, None);
-                self.map_s3_error(e, &dest_key)
-            })?;
+                return Err(self.map_s3_error(e, &dest_key));
+            }
+        };
 
         // Get file size for bytes transferred
         let file_info = self.get_file_info(&normalized_dest).await.ok();
@@ -922,7 +936,7 @@ impl FileService for S3StorageProvider {
 
         let client = self.client.as_ref().unwrap();
 
-        client
+        match client
             .put_object()
             .bucket(&self.s3_config.bucket)
             .key(&directory_key)
@@ -930,10 +944,13 @@ impl FileService for S3StorageProvider {
             .content_type("application/x-directory")
             .send()
             .await
-            .map_err(|e| {
+        {
+            Ok(_) => {},
+            Err(e) => {
                 self.record_operation(false, None);
-                self.map_s3_error(e, &directory_key)
-            })?;
+                return Err(self.map_s3_error(e, &directory_key));
+            }
+        };
 
         self.record_operation(true, None);
 
@@ -987,8 +1004,7 @@ impl FileService for S3StorageProvider {
         let mut entries = Vec::new();
 
         // Add objects
-        if let Some(objects) = result.contents() {
-            for object in objects {
+        for object in result.contents() {
                 if let Some(key) = object.key() {
                     // Skip the directory marker itself
                     if key.ends_with('/') && key.len() == prefix.len() + 1 {
@@ -996,13 +1012,13 @@ impl FileService for S3StorageProvider {
                     }
 
                     let relative_path = self.get_relative_path(key);
-                    let name = key.split('/').last().unwrap_or(key).to_string();
+                    let _name = key.split('/').last().unwrap_or(key).to_string();
 
                     let file_info = self.create_file_info_from_s3_object(
                         &relative_path,
                         object.size().unwrap_or(0),
                         object.last_modified().map(|dt| {
-                            DateTime::from_timestamp(dt.secs(), 0).unwrap_or_else(Utc::now)
+                            ChronoDateTime::from_timestamp(dt.secs(), dt.subsec_nanos()).unwrap_or_else(Utc::now)
                         }),
                         object.e_tag().map(|s| s.to_string()),
                         None,
@@ -1011,12 +1027,10 @@ impl FileService for S3StorageProvider {
 
                     entries.push(file_info);
                 }
-            }
         }
 
         // Add common prefixes (subdirectories)
-        if let Some(prefixes) = result.common_prefixes() {
-            for prefix_info in prefixes {
+        for prefix_info in result.common_prefixes() {
                 if let Some(prefix_key) = prefix_info.prefix() {
                     let relative_path = self.get_relative_path(prefix_key.trim_end_matches('/'));
                     let name = prefix_key
@@ -1032,7 +1046,6 @@ impl FileService for S3StorageProvider {
 
                     entries.push(file_info);
                 }
-            }
         }
 
         // Apply filtering and sorting (simplified for S3)
@@ -1075,7 +1088,7 @@ impl FileService for S3StorageProvider {
 
         // List all objects with the prefix
         let mut continuation_token = None;
-        let mut total_deleted = 0;
+        let mut _total_deleted = 0;
 
         loop {
             let mut list_request = client
@@ -1088,57 +1101,62 @@ impl FileService for S3StorageProvider {
                 list_request = list_request.continuation_token(token);
             }
 
-            let result = list_request.send().await.map_err(|e| {
-                self.record_operation(false, None);
-                FileServiceError::CloudStorageError {
-                    provider: "S3".to_string(),
-                    message: e.to_string(),
+            let result = match list_request.send().await {
+                Ok(result) => result,
+                Err(e) => {
+                    self.record_operation(false, None);
+                    return Err(FileServiceError::CloudStorageError {
+                        provider: "S3".to_string(),
+                        message: e.to_string(),
+                    });
                 }
-            })?;
+            };
 
-            if let Some(objects) = result.contents() {
-                if objects.is_empty() {
-                    break;
-                }
+            let objects = result.contents();
+            if objects.is_empty() {
+                break;
+            }
 
-                // Delete objects in batches
-                let keys: Vec<_> = objects
+            // Delete objects in batches
+            let keys: Vec<_> = objects
+                .iter()
+                .filter_map(|obj| obj.key())
+                .collect();
+
+            for chunk in keys.chunks(1000) {
+                let delete_objects: Vec<_> = chunk
                     .iter()
-                    .filter_map(|obj| obj.key())
+                    .map(|key| {
+                        aws_sdk_s3::types::ObjectIdentifier::builder()
+                            .key(*key)
+                            .build()
+                            .unwrap()
+                    })
                     .collect();
 
-                for chunk in keys.chunks(1000) {
-                    let delete_objects: Vec<_> = chunk
-                        .iter()
-                        .map(|key| {
-                            aws_sdk_s3::types::ObjectIdentifier::builder()
-                                .key(*key)
-                                .build()
-                                .unwrap()
-                        })
-                        .collect();
+                let delete_request = aws_sdk_s3::types::Delete::builder()
+                    .set_objects(Some(delete_objects))
+                    .build()
+                    .unwrap();
 
-                    let delete_request = aws_sdk_s3::types::Delete::builder()
-                        .set_objects(Some(delete_objects))
-                        .build()
-                        .unwrap();
+                match client
+                    .delete_objects()
+                    .bucket(&self.s3_config.bucket)
+                    .delete(delete_request)
+                    .send()
+                    .await
+                {
+                    Ok(_) => {},
+                    Err(e) => {
+                        self.record_operation(false, None);
+                        return Err(FileServiceError::CloudStorageError {
+                            provider: "S3".to_string(),
+                            message: e.to_string(),
+                        });
+                    }
+                };
 
-                    client
-                        .delete_objects()
-                        .bucket(&self.s3_config.bucket)
-                        .delete(delete_request)
-                        .send()
-                        .await
-                        .map_err(|e| {
-                            self.record_operation(false, None);
-                            FileServiceError::CloudStorageError {
-                                provider: "S3".to_string(),
-                                message: e.to_string(),
-                            }
-                        })?;
-
-                    total_deleted += chunk.len();
-                }
+                _total_deleted += chunk.len();
             }
 
             if !result.is_truncated().unwrap_or(false) {
@@ -1155,8 +1173,8 @@ impl FileService for S3StorageProvider {
 
     async fn copy_directory(
         &self,
-        source: &str,
-        destination: &str,
+        _source: &str,
+        _destination: &str,
         _options: CopyOptions,
     ) -> FileResult<FileOperationResult> {
         // This would be a complex operation involving listing and copying many objects
@@ -1226,9 +1244,8 @@ impl FileService for S3StorageProvider {
             metadata: options.metadata,
         };
 
-        if let Ok(mut uploads) = self.multipart_uploads.lock() {
-            uploads.insert(upload_id.clone(), upload.clone());
-        }
+        let mut uploads = self.multipart_uploads.lock().await;
+        uploads.insert(upload_id.clone(), upload.clone());
 
         Ok(upload)
     }
@@ -1239,12 +1256,7 @@ impl FileService for S3StorageProvider {
         part_number: u32,
         content: Bytes,
     ) -> FileResult<UploadPart> {
-        let uploads = self.multipart_uploads.lock().map_err(|_| {
-            FileServiceError::InternalError {
-                message: "Failed to lock multipart uploads".to_string(),
-            }
-        })?;
-
+        let uploads = self.multipart_uploads.lock().await;
         let upload = uploads.get(upload_id).ok_or_else(|| {
             FileServiceError::InvalidMultipartUpload {
                 reason: "Upload not found".to_string(),
@@ -1284,11 +1296,10 @@ impl FileService for S3StorageProvider {
 
         // Update the upload record
         drop(uploads);
-        if let Ok(mut uploads) = self.multipart_uploads.lock() {
-            if let Some(upload) = uploads.get_mut(upload_id) {
-                upload.parts.push(part.clone());
-                upload.parts.sort_by_key(|p| p.part_number);
-            }
+        let mut uploads = self.multipart_uploads.lock().await;
+        if let Some(upload) = uploads.get_mut(upload_id) {
+            upload.parts.push(part.clone());
+            upload.parts.sort_by_key(|p| p.part_number);
         }
 
         Ok(part)
@@ -1299,12 +1310,7 @@ impl FileService for S3StorageProvider {
         upload_id: &str,
         parts: Vec<UploadPart>,
     ) -> FileResult<FileOperationResult> {
-        let mut uploads = self.multipart_uploads.lock().map_err(|_| {
-            FileServiceError::InternalError {
-                message: "Failed to lock multipart uploads".to_string(),
-            }
-        })?;
-
+        let mut uploads = self.multipart_uploads.lock().await;
         let upload = uploads.remove(upload_id).ok_or_else(|| {
             FileServiceError::InvalidMultipartUpload {
                 reason: "Upload not found".to_string(),
@@ -1336,7 +1342,7 @@ impl FileService for S3StorageProvider {
             .set_parts(Some(completed_parts))
             .build();
 
-        let result = client
+        let _result = client
             .complete_multipart_upload()
             .bucket(&self.s3_config.bucket)
             .key(&s3_key)
@@ -1354,12 +1360,7 @@ impl FileService for S3StorageProvider {
     }
 
     async fn abort_multipart_upload(&self, upload_id: &str) -> FileResult<FileOperationResult> {
-        let mut uploads = self.multipart_uploads.lock().map_err(|_| {
-            FileServiceError::InternalError {
-                message: "Failed to lock multipart uploads".to_string(),
-            }
-        })?;
-
+        let mut uploads = self.multipart_uploads.lock().await;
         let upload = uploads.remove(upload_id).ok_or_else(|| {
             FileServiceError::InvalidMultipartUpload {
                 reason: "Upload not found".to_string(),
@@ -1389,16 +1390,11 @@ impl FileService for S3StorageProvider {
     }
 
     async fn list_multipart_uploads(&self) -> FileResult<Vec<MultipartUpload>> {
-        let uploads = self.multipart_uploads.lock().map_err(|_| {
-            FileServiceError::InternalError {
-                message: "Failed to lock multipart uploads".to_string(),
-            }
-        })?;
-
+        let uploads = self.multipart_uploads.lock().await;
         Ok(uploads.values().cloned().collect())
     }
 
-    async fn batch_operation(&self, operation: BatchOperation) -> FileResult<BatchOperationResult> {
+    async fn batch_operation(&self, _operation: BatchOperation) -> FileResult<BatchOperationResult> {
         // Implement batch operations similar to local storage but using S3 operations
         // This is a simplified implementation
         Err(FileServiceError::InternalError {
@@ -1568,10 +1564,13 @@ impl FileService for S3StorageProvider {
             request = request.metadata(key, value);
         }
 
-        request.send().await.map_err(|e| {
-            self.record_operation(false, None);
-            self.map_s3_error(e, &s3_key)
-        })?;
+        match request.send().await {
+            Ok(_) => {},
+            Err(e) => {
+                self.record_operation(false, None);
+                return Err(self.map_s3_error(e, &s3_key));
+            }
+        }
 
         self.record_operation(true, None);
 

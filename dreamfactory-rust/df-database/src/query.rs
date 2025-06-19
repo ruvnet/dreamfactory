@@ -1,6 +1,6 @@
 use crate::{DatabaseError, QueryParams};
 use serde_json::Value;
-use std::collections::HashMap;
+use sqlx::{any::AnyRow, Row, Column, TypeInfo};
 
 /// Query builder for constructing database queries
 #[derive(Debug, Clone)]
@@ -412,9 +412,7 @@ impl SqlExecutor {
     }
 
     /// Extract value from database row
-    fn extract_value_from_row(row: &sqlx::AnyRow, index: usize) -> Result<Value, DatabaseError> {
-        use sqlx::Row;
-        
+    fn extract_value_from_row(row: &AnyRow, index: usize) -> Result<Value, DatabaseError> {
         let column = &row.columns()[index];
         let type_info = column.type_info();
         
@@ -453,7 +451,10 @@ impl SqlExecutor {
             "JSON" | "JSONB" => {
                 match row.try_get::<Option<String>, _>(index) {
                     Ok(Some(s)) => {
-                        serde_json::from_str(&s).unwrap_or(Value::String(s))
+                        match serde_json::from_str(&s) {
+                            Ok(value) => Ok(value),
+                            Err(_) => Ok(Value::String(s))
+                        }
                     }
                     Ok(None) => Ok(Value::Null),
                     Err(_) => Ok(Value::Null),

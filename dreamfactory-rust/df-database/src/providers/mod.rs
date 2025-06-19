@@ -7,7 +7,6 @@ pub use postgresql::*;
 pub use sqlite::*;
 
 use crate::{DatabaseError, DatabaseProvider, DatabaseService, ConnectionConfig, PoolConfig};
-use crate::database::DatabaseServiceImpl;
 
 /// Database provider factory
 pub struct DatabaseProviderFactory;

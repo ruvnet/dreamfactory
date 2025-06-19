@@ -1,9 +1,9 @@
 use crate::{
-    AuthError, Result, User, AuthContext, Claims, LoginRequest, RegisterRequest,
-    SessionResponse, AuthResponse, LogoutResponse, RefreshTokenRequest,
+    AuthError, Result, AuthContext, LoginRequest, RegisterRequest,
+    AuthResponse, LogoutResponse, RefreshTokenRequest,
     UserService, SessionService, JwtService, AuthConfig
 };
-use sqlx::{Pool, Sqlite};
+use sqlx::{Pool, Sqlite, Row};
 use uuid::Uuid;
 use validator::Validate;
 
@@ -54,8 +54,8 @@ impl AuthService {
 
         Ok(AuthResponse {
             success: true,
-            session_token: session.token,
-            session_id: session.id.to_string(),
+            session_token: session.session_token,
+            session_id: session.session_id.to_string(),
             user_id: user.id.to_string(),
             email: user.email,
             first_name: user.first_name,
@@ -81,17 +81,20 @@ impl AuthService {
         let user = self.user_service.create_user(create_request, None).await?;
 
         // Assign default user role (assuming role with name "user" exists)
-        if let Ok(roles) = sqlx::query!("SELECT id FROM roles WHERE name = 'user' AND is_active = TRUE")
-            .fetch_all(&self.user_service.db)
+        if let Ok(roles) = sqlx::query("SELECT id FROM roles WHERE name = 'user' AND is_active = TRUE")
+            .fetch_all(self.user_service.db())
             .await 
         {
             if let Some(role) = roles.first() {
-                let _ = self.user_service.assign_role_to_user(user.id, role.id, None).await;
+                let role_id: String = role.get("id");
+                if let Ok(role_uuid) = Uuid::parse_str(&role_id) {
+                    let _ = self.user_service.assign_role_to_user(user.id, role_uuid, None).await;
+                }
             }
         }
 
         // Auto-login after registration
-        let login_request = LoginRequest {
+        let _login_request = LoginRequest {
             email: request.email,
             password: String::new(), // We don't need to re-verify password
             remember_me: Some(false),
@@ -113,8 +116,8 @@ impl AuthService {
 
         Ok(AuthResponse {
             success: true,
-            session_token: session.token,
-            session_id: session.id.to_string(),
+            session_token: session.session_token,
+            session_id: session.session_id.to_string(),
             user_id: user.id.to_string(),
             email: user.email,
             first_name: user.first_name,

@@ -65,53 +65,55 @@ impl SessionService {
         );
 
         // Insert into database
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO sessions (
                 id, user_id, token, refresh_token, expires_at, refresh_expires_at,
                 is_active, ip_address, user_agent, created_date, last_activity
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            "#,
-            session.id,
-            session.user_id,
-            session.token,
-            session.refresh_token,
-            session.expires_at,
-            session.refresh_expires_at,
-            session.is_active,
-            session.ip_address,
-            session.user_agent,
-            session.created_date,
-            session.last_activity
+            "#
         )
+        .bind(session.id)
+        .bind(session.user_id)
+        .bind(&session.token)
+        .bind(&session.refresh_token)
+        .bind(session.expires_at)
+        .bind(session.refresh_expires_at)
+        .bind(session.is_active)
+        .bind(&session.ip_address)
+        .bind(&session.user_agent)
+        .bind(session.created_date)
+        .bind(session.last_activity)
         .execute(&self.db)
         .await
         .map_err(AuthError::Database)?;
 
         // Get user email for response
-        let user_email = sqlx::query!("SELECT email, first_name, last_name FROM users WHERE id = ?", user_id)
-            .fetch_one(&self.db)
-            .await
-            .map_err(AuthError::Database)?;
+        let user_email: (String, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT email, first_name, last_name FROM users WHERE id = ?"
+        )
+        .bind(user_id)
+        .fetch_one(&self.db)
+        .await
+        .map_err(AuthError::Database)?;
 
         Ok(SessionResponse {
             session_token: token,
             session_id,
             user_id,
-            email: user_email.email,
-            first_name: user_email.first_name,
-            last_name: user_email.last_name,
+            email: user_email.0,
+            first_name: user_email.1,
+            last_name: user_email.2,
             expires_in: jwt_expiration,
             refresh_token,
         })
     }
 
     pub async fn get_session(&self, session_id: Uuid) -> Result<Session> {
-        let session = sqlx::query_as!(
-            Session,
-            "SELECT * FROM sessions WHERE id = ?",
-            session_id
+        let session = sqlx::query_as::<_, Session>(
+            "SELECT * FROM sessions WHERE id = ?"
         )
+        .bind(session_id)
         .fetch_one(&self.db)
         .await
         .map_err(|_| AuthError::SessionNotFound)?;
@@ -121,11 +123,11 @@ impl SessionService {
 
     pub async fn update_session_activity(&self, session_id: Uuid) -> Result<()> {
         let now = Utc::now();
-        sqlx::query!(
-            "UPDATE sessions SET last_activity = ? WHERE id = ?",
-            now,
-            session_id
+        sqlx::query(
+            "UPDATE sessions SET last_activity = ? WHERE id = ?"
         )
+        .bind(now)
+        .bind(session_id)
         .execute(&self.db)
         .await
         .map_err(AuthError::Database)?;
@@ -134,10 +136,10 @@ impl SessionService {
     }
 
     pub async fn deactivate_session(&self, session_id: Uuid) -> Result<()> {
-        sqlx::query!(
-            "UPDATE sessions SET is_active = FALSE WHERE id = ?",
-            session_id
+        sqlx::query(
+            "UPDATE sessions SET is_active = FALSE WHERE id = ?"
         )
+        .bind(session_id)
         .execute(&self.db)
         .await
         .map_err(AuthError::Database)?;
@@ -146,10 +148,10 @@ impl SessionService {
     }
 
     pub async fn deactivate_user_sessions(&self, user_id: Uuid) -> Result<()> {
-        sqlx::query!(
-            "UPDATE sessions SET is_active = FALSE WHERE user_id = ?",
-            user_id
+        sqlx::query(
+            "UPDATE sessions SET is_active = FALSE WHERE user_id = ?"
         )
+        .bind(user_id)
         .execute(&self.db)
         .await
         .map_err(AuthError::Database)?;
@@ -159,11 +161,10 @@ impl SessionService {
 
     pub async fn refresh_session(&self, refresh_token: &str) -> Result<SessionResponse> {
         // Find session by refresh token
-        let mut session = sqlx::query_as!(
-            Session,
-            "SELECT * FROM sessions WHERE refresh_token = ? AND is_active = TRUE",
-            refresh_token
+        let mut session = sqlx::query_as::<_, Session>(
+            "SELECT * FROM sessions WHERE refresh_token = ? AND is_active = TRUE"
         )
+        .bind(refresh_token)
         .fetch_one(&self.db)
         .await
         .map_err(|_| AuthError::SessionNotFound)?;
@@ -175,10 +176,13 @@ impl SessionService {
         }
 
         // Get user info and permissions
-        let user = sqlx::query!("SELECT email FROM users WHERE id = ?", session.user_id)
-            .fetch_one(&self.db)
-            .await
-            .map_err(AuthError::Database)?;
+        let user: (String,) = sqlx::query_as(
+            "SELECT email FROM users WHERE id = ?"
+        )
+        .bind(session.user_id)
+        .fetch_one(&self.db)
+        .await
+        .map_err(AuthError::Database)?;
 
         let roles = self.get_user_roles(session.user_id).await?;
         let permissions = self.get_user_permissions(session.user_id).await?;
@@ -186,7 +190,7 @@ impl SessionService {
         // Generate new JWT token
         let new_token = self.jwt_service.generate_token(
             session.user_id,
-            user.email.clone(),
+            user.0.clone(),
             session.id,
             roles,
             permissions,
@@ -198,30 +202,33 @@ impl SessionService {
         session.expires_at = now + chrono::Duration::seconds(self.config.jwt_expiration);
         session.last_activity = now;
 
-        sqlx::query!(
-            "UPDATE sessions SET token = ?, expires_at = ?, last_activity = ? WHERE id = ?",
-            session.token,
-            session.expires_at,
-            session.last_activity,
-            session.id
+        sqlx::query(
+            "UPDATE sessions SET token = ?, expires_at = ?, last_activity = ? WHERE id = ?"
         )
+        .bind(&session.token)
+        .bind(session.expires_at)
+        .bind(session.last_activity)
+        .bind(session.id)
         .execute(&self.db)
         .await
         .map_err(AuthError::Database)?;
 
         // Get user details for response
-        let user_details = sqlx::query!("SELECT email, first_name, last_name FROM users WHERE id = ?", session.user_id)
-            .fetch_one(&self.db)
-            .await
-            .map_err(AuthError::Database)?;
+        let user_details: (String, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT email, first_name, last_name FROM users WHERE id = ?"
+        )
+        .bind(session.user_id)
+        .fetch_one(&self.db)
+        .await
+        .map_err(AuthError::Database)?;
 
         Ok(SessionResponse {
             session_token: new_token,
             session_id: session.id,
             user_id: session.user_id,
-            email: user_details.email,
-            first_name: user_details.first_name,
-            last_name: user_details.last_name,
+            email: user_details.0,
+            first_name: user_details.1,
+            last_name: user_details.2,
             expires_in: self.config.jwt_expiration,
             refresh_token: session.refresh_token,
         })
@@ -229,11 +236,11 @@ impl SessionService {
 
     pub async fn cleanup_expired_sessions(&self) -> Result<u64> {
         let now = Utc::now();
-        let result = sqlx::query!(
-            "DELETE FROM sessions WHERE expires_at < ? OR refresh_expires_at < ?",
-            now,
-            now
+        let result = sqlx::query(
+            "DELETE FROM sessions WHERE expires_at < ? OR refresh_expires_at < ?"
         )
+        .bind(now)
+        .bind(now)
         .execute(&self.db)
         .await
         .map_err(AuthError::Database)?;
@@ -242,11 +249,10 @@ impl SessionService {
     }
 
     pub async fn get_active_sessions(&self, user_id: Uuid) -> Result<Vec<Session>> {
-        let sessions = sqlx::query_as!(
-            Session,
-            "SELECT * FROM sessions WHERE user_id = ? AND is_active = TRUE ORDER BY last_activity DESC",
-            user_id
+        let sessions = sqlx::query_as::<_, Session>(
+            "SELECT * FROM sessions WHERE user_id = ? AND is_active = TRUE ORDER BY last_activity DESC"
         )
+        .bind(user_id)
         .fetch_all(&self.db)
         .await
         .map_err(AuthError::Database)?;
@@ -270,38 +276,38 @@ impl SessionService {
     }
 
     async fn get_user_roles(&self, user_id: Uuid) -> Result<Vec<String>> {
-        let rows = sqlx::query!(
+        let rows: Vec<(String,)> = sqlx::query_as(
             r#"
             SELECT r.name
             FROM roles r
             JOIN user_roles ur ON r.id = ur.role_id
             WHERE ur.user_id = ? AND r.is_active = TRUE
-            "#,
-            user_id
+            "#
         )
+        .bind(user_id)
         .fetch_all(&self.db)
         .await
         .map_err(AuthError::Database)?;
 
-        Ok(rows.into_iter().map(|row| row.name).collect())
+        Ok(rows.into_iter().map(|row| row.0).collect())
     }
 
     async fn get_user_permissions(&self, user_id: Uuid) -> Result<Vec<String>> {
-        let rows = sqlx::query!(
+        let rows: Vec<(String,)> = sqlx::query_as(
             r#"
             SELECT DISTINCT p.resource || '.' || p.action as permission
             FROM permissions p
             JOIN role_permissions rp ON p.id = rp.permission_id
             JOIN user_roles ur ON rp.role_id = ur.role_id
             WHERE ur.user_id = ? AND p.is_active = TRUE
-            "#,
-            user_id
+            "#
         )
+        .bind(user_id)
         .fetch_all(&self.db)
         .await
         .map_err(AuthError::Database)?;
 
-        Ok(rows.into_iter().map(|row| row.permission).collect())
+        Ok(rows.into_iter().map(|row| row.0).collect())
     }
 }
 

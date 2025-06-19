@@ -3,7 +3,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use tracing::{info, warn, instrument};
+use tracing::{info, instrument};
 
 /// Email service handler - implements /api/v2/email/* endpoints
 pub struct EmailServiceHandler;
@@ -199,8 +199,9 @@ impl EmailServiceHandler {
     }
 }
 
+#[async_trait::async_trait]
 impl ServiceHandler for EmailServiceHandler {
-    #[instrument(skip(self, query_params, body))]
+    #[instrument(skip(self, _query_params, body))]
     async fn handle_request(
         &self,
         route: &ApiRoute,

@@ -1,6 +1,6 @@
 use crate::{
-    AuthError, Result, AuthService, LoginRequest, RegisterRequest, RefreshTokenRequest,
-    AuthResponse, LogoutResponse, ChangePasswordRequest, AuthContext
+    AuthError, Result, LoginRequest, RegisterRequest, RefreshTokenRequest,
+    AuthResponse, LogoutResponse, ChangePasswordRequest, AuthContext, AuthServiceState
 };
 use axum::{
     extract::{State, Extension},
@@ -8,9 +8,6 @@ use axum::{
     response::Json,
     Json as JsonBody,
 };
-use std::sync::Arc;
-
-pub type AuthServiceState = Arc<AuthService>;
 
 pub async fn login(
     State(auth_service): State<AuthServiceState>,
@@ -106,7 +103,7 @@ fn get_client_ip(headers: &HeaderMap) -> Option<String> {
     ];
 
     for header_name in &ip_headers {
-        if let Some(value) = headers.get(header_name).and_then(|h| h.to_str().ok()) {
+        if let Some(value) = headers.get(*header_name).and_then(|h| h.to_str().ok()) {
             // For X-Forwarded-For, take the first IP
             let ip = value.split(',').next().unwrap_or(value).trim();
             if !ip.is_empty() {

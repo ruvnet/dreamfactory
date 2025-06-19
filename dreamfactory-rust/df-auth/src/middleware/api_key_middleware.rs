@@ -1,4 +1,4 @@
-use crate::{AuthError, Result, AuthContext, ApiKeyService, AuthConfig};
+use crate::{AuthError, Result, AuthContext, ApiKeyServiceState};
 use axum::{
     extract::{Request, State, Query},
     http::{HeaderMap, StatusCode},
@@ -6,11 +6,7 @@ use axum::{
     response::Response,
 };
 use serde::Deserialize;
-use sqlx::{Pool, Sqlite};
-use std::{sync::Arc, collections::HashMap};
 use uuid::Uuid;
-
-pub type ApiKeyServiceState = Arc<ApiKeyService>;
 
 #[derive(Deserialize)]
 pub struct ApiKeyQuery {
@@ -164,7 +160,7 @@ fn get_client_ip(headers: &HeaderMap) -> Option<String> {
     ];
 
     for header_name in &ip_headers {
-        if let Some(value) = headers.get(header_name).and_then(|h| h.to_str().ok()) {
+        if let Some(value) = headers.get(*header_name).and_then(|h| h.to_str().ok()) {
             let ip = value.split(',').next().unwrap_or(value).trim();
             if !ip.is_empty() {
                 return Some(ip.to_string());
@@ -177,11 +173,11 @@ fn get_client_ip(headers: &HeaderMap) -> Option<String> {
 
 /// Rate limiting middleware for API keys
 pub async fn api_key_rate_limit_middleware(
-    mut request: Request,
+    request: Request,
     next: Next,
 ) -> std::result::Result<Response, StatusCode> {
     // Extract auth context to get API key info
-    if let Some(auth_context) = request.extensions().get::<AuthContext>() {
+    if let Some(_auth_context) = request.extensions().get::<AuthContext>() {
         // Check if this is an API key request (session_id matches an API key pattern)
         // In a real implementation, you'd check against a rate limiting store (Redis, etc.)
         

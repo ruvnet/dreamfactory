@@ -1,13 +1,10 @@
-use crate::{AuthError, Result, AuthService, AuthContext};
+use crate::{AuthError, Result, AuthContext, AuthServiceState};
 use axum::{
     extract::{Request, State},
     http::{HeaderMap, StatusCode},
     middleware::Next,
     response::Response,
 };
-use std::sync::Arc;
-
-pub type AuthServiceState = Arc<AuthService>;
 
 pub async fn auth_middleware(
     State(auth_service): State<AuthServiceState>,
@@ -85,9 +82,9 @@ async fn handle_api_key_auth(
 }
 
 async fn validate_api_key(
-    auth_service: &AuthService,
-    api_key: &str,
-    ip_address: Option<&str>,
+    _auth_service: &AuthServiceState,
+    _api_key: &str,
+    _ip_address: Option<&str>,
 ) -> Result<AuthContext> {
     // This would need access to the API key service
     // For now, we'll create a simplified version
@@ -134,7 +131,7 @@ fn get_client_ip(headers: &HeaderMap) -> Option<String> {
     ];
 
     for header_name in &ip_headers {
-        if let Some(value) = headers.get(header_name).and_then(|h| h.to_str().ok()) {
+        if let Some(value) = headers.get(*header_name).and_then(|h| h.to_str().ok()) {
             let ip = value.split(',').next().unwrap_or(value).trim();
             if !ip.is_empty() {
                 return Some(ip.to_string());

@@ -114,6 +114,9 @@ impl fmt::Display for ServiceInfo {
 }
 
 /// Core service trait that all DreamFactory services must implement
+/// 
+/// This trait is object-safe and can be used as `dyn Service` thanks to the async_trait macro.
+/// All async methods are automatically converted to return `Pin<Box<dyn Future + Send>>`.
 #[async_trait]
 pub trait Service: Send + Sync {
     /// Get service information
@@ -223,7 +226,6 @@ impl Service for BaseService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio_test;
 
     #[test]
     fn test_service_info_creation() {
@@ -511,5 +513,84 @@ mod tests {
         assert_eq!(info.dependencies, cloned.dependencies);
         assert_eq!(info.tags, cloned.tags);
         assert_eq!(info.metadata, cloned.metadata);
+    }
+
+    #[tokio::test]
+    async fn test_service_dyn_compatibility() {
+        // Test that Service trait is object-safe and can be used as dyn Service
+        let info = ServiceInfo::new("dyn-test-service", "1.0.0", "Testing dyn compatibility");
+        let service = BaseService::new(info);
+        
+        // Create a boxed trait object to verify dyn compatibility
+        let boxed_service: Box<dyn Service> = Box::new(service);
+        
+        // Test that we can call methods on the trait object
+        assert_eq!(boxed_service.info().name, "dyn-test-service");
+        assert_eq!(boxed_service.state(), ServiceState::Created);
+        
+        // Test async methods (note: we can't test mutable methods on a shared reference)
+        let health = boxed_service.health_check().await.unwrap();
+        assert!(!health); // Should be false because state is Created, not Running
+        
+        let metrics = boxed_service.metrics().await.unwrap();
+        assert!(metrics.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_service_vector_compatibility() {
+        // Test that we can store multiple services in a vector as trait objects
+        let info1 = ServiceInfo::new("service1", "1.0.0", "First service");
+        let info2 = ServiceInfo::new("service2", "2.0.0", "Second service");
+        
+        let service1 = BaseService::new(info1);
+        let service2 = BaseService::new(info2);
+        
+        let services: Vec<Box<dyn Service>> = vec![
+            Box::new(service1),
+            Box::new(service2),
+        ];
+        
+        // Verify we can iterate and call methods
+        for service in &services {
+            assert!(!service.info().name.is_empty());
+            assert_eq!(service.state(), ServiceState::Created);
+        }
+        
+        assert_eq!(services.len(), 2);
+        assert_eq!(services[0].info().name, "service1");
+        assert_eq!(services[1].info().name, "service2");
+    }
+
+    #[tokio::test]
+    async fn test_service_registry_pattern() {
+        // Demonstrate a practical use case: service registry with trait objects
+        use std::collections::HashMap;
+        
+        let mut registry: HashMap<String, Box<dyn Service>> = HashMap::new();
+        
+        // Register different services
+        let database_info = ServiceInfo::new("database", "1.0.0", "Database service");
+        let cache_info = ServiceInfo::new("cache", "1.0.0", "Cache service");
+        
+        registry.insert("database".to_string(), Box::new(BaseService::new(database_info)));
+        registry.insert("cache".to_string(), Box::new(BaseService::new(cache_info)));
+        
+        // Demonstrate we can retrieve and use services polymorphically
+        if let Some(db_service) = registry.get("database") {
+            assert_eq!(db_service.info().name, "database");
+            assert_eq!(db_service.state(), ServiceState::Created);
+            
+            // Test async methods work on trait objects
+            let is_healthy = db_service.health_check().await.unwrap();
+            assert!(!is_healthy); // Not running yet
+            
+            let metrics = db_service.metrics().await.unwrap();
+            assert!(metrics.is_empty());
+        }
+        
+        // Verify we can iterate over all services
+        let service_names: Vec<&String> = registry.keys().collect();
+        assert!(service_names.contains(&&"database".to_string()));
+        assert!(service_names.contains(&&"cache".to_string()));
     }
 }

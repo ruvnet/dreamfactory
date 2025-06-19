@@ -3,7 +3,6 @@ use axum::{
     extract::{Query, State},
     http::{Method, StatusCode},
     response::Json,
-    Extension,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;

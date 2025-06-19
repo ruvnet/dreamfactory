@@ -6,11 +6,10 @@
 use crate::error::{DfError, DfResult};
 use crate::service::{Service, ServiceInfo, ServiceState};
 use async_trait::async_trait;
-use std::any::{Any, TypeId};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::any::TypeId;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use uuid::Uuid;
 
 /// Registry-specific error types
 #[derive(Debug, thiserror::Error)]
@@ -45,6 +44,23 @@ struct ServiceEntry {
     service: Box<dyn Service>,
     type_id: TypeId,
     type_name: String,
+}
+
+impl ServiceEntry {
+    /// Get the service type ID
+    pub fn type_id(&self) -> TypeId {
+        self.type_id
+    }
+
+    /// Get the service type name
+    pub fn type_name(&self) -> &str {
+        &self.type_name
+    }
+
+    /// Check if this service matches the given type
+    pub fn is_type<T: 'static>(&self) -> bool {
+        self.type_id == TypeId::of::<T>()
+    }
 }
 
 /// Service factory trait for creating services
@@ -178,7 +194,7 @@ impl ServiceRegistry {
     pub async fn get_service(&self, name: &str) -> DfResult<Box<dyn Service>> {
         let services = self.services.read().await;
         
-        if let Some(entry) = services.get(name) {
+        if let Some(_entry) = services.get(name) {
             // We can't clone the service directly, so we'll return an error for now
             // In a real implementation, we might want to use Arc<Mutex<>> or similar
             return Err(DfError::registry("Cannot clone service - use get_service_ref instead"));
@@ -193,7 +209,7 @@ impl ServiceRegistry {
             drop(factories);
             
             // Register the created service
-            let info = service.info().clone();
+            let _info = service.info().clone();
             self.register_service_boxed(service).await?;
             
             // Return a reference to the registered service
@@ -204,7 +220,7 @@ impl ServiceRegistry {
     }
 
     /// Get a service reference by name (internal helper)
-    async fn get_service_ref(&self, name: &str) -> DfResult<Box<dyn Service>> {
+    async fn get_service_ref(&self, _name: &str) -> DfResult<Box<dyn Service>> {
         Err(DfError::registry("get_service_ref not implemented - services are owned by registry"))
     }
 
@@ -241,7 +257,7 @@ impl ServiceRegistry {
     }
 
     /// Get a typed service by name
-    pub async fn get_typed_service<T: Service + 'static>(&self, name: &str) -> DfResult<Option<&T>> {
+    pub async fn get_typed_service<T: Service + 'static>(&self, _name: &str) -> DfResult<Option<&T>> {
         // This would require unsafe code to return a proper reference
         // For now, we'll return an error indicating this isn't implemented
         Err(DfError::registry("get_typed_service not implemented - use service IDs or different architecture"))
@@ -277,6 +293,26 @@ impl ServiceRegistry {
         }
     }
 
+    /// Get service type information by name
+    pub async fn get_service_type_info(&self, name: &str) -> DfResult<(TypeId, String)> {
+        let services = self.services.read().await;
+        if let Some(entry) = services.get(name) {
+            Ok((entry.type_id(), entry.type_name().to_string()))
+        } else {
+            Err(RegistryError::ServiceNotFound { name: name.to_string() }.into())
+        }
+    }
+
+    /// Check if a service matches a specific type
+    pub async fn is_service_type<T: 'static>(&self, name: &str) -> DfResult<bool> {
+        let services = self.services.read().await;
+        if let Some(entry) = services.get(name) {
+            Ok(entry.is_type::<T>())
+        } else {
+            Err(RegistryError::ServiceNotFound { name: name.to_string() }.into())
+        }
+    }
+
     /// Get service state by name
     pub async fn get_service_state(&self, name: &str) -> DfResult<ServiceState> {
         let services = self.services.read().await;
@@ -291,8 +327,8 @@ impl ServiceRegistry {
     pub async fn initialize_all(&self) -> DfResult<()> {
         let startup_order = self.startup_order.read().await.clone();
         
-        for service_name in startup_order {
-            self.initialize_service(&service_name).await?;
+        for service_name in &startup_order {
+            self.initialize_service(service_name).await?;
         }
         
         Ok(())
@@ -321,8 +357,8 @@ impl ServiceRegistry {
     pub async fn start_all(&self) -> DfResult<()> {
         let startup_order = self.startup_order.read().await.clone();
         
-        for service_name in startup_order {
-            self.start_service(&service_name).await?;
+        for service_name in &startup_order {
+            self.start_service(service_name).await?;
         }
         
         Ok(())
@@ -419,7 +455,7 @@ impl ServiceRegistry {
     ) -> DfResult<()> {
         if visiting.contains(service_name) {
             // Cycle detected
-            let mut cycle = vec![service_name.to_string()];
+            let cycle = vec![service_name.to_string()];
             return Err(RegistryError::CircularDependency { cycle }.into());
         }
         

@@ -66,7 +66,7 @@ impl MySqlProvider {
     pub async fn get_version(&self) -> Result<String, DatabaseError> {
         let query = "SELECT VERSION() as version";
         let result = crate::query::SqlExecutor::execute_select(
-            &self.inner.pool,
+            self.inner.get_pool(),
             query,
             &[],
         ).await?;
@@ -91,7 +91,7 @@ impl MySqlProvider {
         "#;
 
         let result = crate::query::SqlExecutor::execute_select(
-            &self.inner.pool,
+            self.inner.get_pool(),
             query,
             &[serde_json::Value::String(table.to_string())],
         ).await?;
@@ -121,7 +121,7 @@ impl MySqlProvider {
         "#;
 
         let result = crate::query::SqlExecutor::execute_select(
-            &self.inner.pool,
+            self.inner.get_pool(),
             query,
             &[serde_json::Value::String(table.to_string())],
         ).await?;
@@ -166,7 +166,7 @@ impl MySqlProvider {
         "#;
 
         let result = crate::query::SqlExecutor::execute_select(
-            &self.inner.pool,
+            self.inner.get_pool(),
             query,
             &[serde_json::Value::String(table.to_string())],
         ).await?;
@@ -202,7 +202,7 @@ impl MySqlProvider {
     /// Execute MySQL-specific SHOW command
     pub async fn show_command(&self, command: &str) -> Result<Vec<serde_json::Value>, DatabaseError> {
         let query = format!("SHOW {}", command);
-        crate::query::SqlExecutor::execute_select(&self.inner.pool, &query, &[]).await
+        crate::query::SqlExecutor::execute_select(self.inner.get_pool(), &query, &[]).await
     }
 
     /// Get MySQL-specific system variables

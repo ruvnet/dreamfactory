@@ -1,13 +1,10 @@
-use crate::{AuthError, Result, AuthContext, UserService, UpdateUserRequest};
+use crate::{AuthError, Result, AuthContext, UpdateUserRequest, UserServiceState, SessionServiceState, ApiKeyServiceState};
 use axum::{
     extract::{Extension, Path, State},
     response::Json,
     Json as JsonBody,
 };
-use std::sync::Arc;
 use uuid::Uuid;
-
-pub type UserServiceState = Arc<UserService>;
 
 pub async fn get_current_user_profile(
     Extension(auth_context): Extension<AuthContext>,
@@ -63,7 +60,7 @@ pub async fn change_current_user_password(
 
 pub async fn get_user_sessions(
     Extension(auth_context): Extension<AuthContext>,
-    State(session_service): State<Arc<crate::SessionService>>,
+    State(session_service): State<SessionServiceState>,
 ) -> Result<Json<Vec<crate::Session>>> {
     // Users can only view their own sessions
     let sessions = session_service.get_active_sessions(auth_context.user_id).await?;
@@ -72,7 +69,7 @@ pub async fn get_user_sessions(
 
 pub async fn terminate_user_session(
     Extension(auth_context): Extension<AuthContext>,
-    State(session_service): State<Arc<crate::SessionService>>,
+    State(session_service): State<SessionServiceState>,
     Path(session_id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
     // Get the session to verify ownership
@@ -93,7 +90,7 @@ pub async fn terminate_user_session(
 
 pub async fn get_user_api_keys(
     Extension(auth_context): Extension<AuthContext>,
-    State(api_key_service): State<Arc<crate::ApiKeyService>>,
+    State(api_key_service): State<ApiKeyServiceState>,
 ) -> Result<Json<Vec<crate::ApiKey>>> {
     // Users can only view their own API keys
     let api_keys = api_key_service.list_api_keys(Some(auth_context.user_id), None, None).await?;
@@ -102,7 +99,7 @@ pub async fn get_user_api_keys(
 
 pub async fn create_user_api_key(
     Extension(auth_context): Extension<AuthContext>,
-    State(api_key_service): State<Arc<crate::ApiKeyService>>,
+    State(api_key_service): State<ApiKeyServiceState>,
     JsonBody(mut request): JsonBody<crate::CreateApiKeyRequest>,
 ) -> Result<Json<crate::ApiKeyResponse>> {
     // Force the API key to be associated with the current user
@@ -114,7 +111,7 @@ pub async fn create_user_api_key(
 
 pub async fn update_user_api_key(
     Extension(auth_context): Extension<AuthContext>,
-    State(api_key_service): State<Arc<crate::ApiKeyService>>,
+    State(api_key_service): State<ApiKeyServiceState>,
     Path(api_key_id): Path<Uuid>,
     JsonBody(request): JsonBody<crate::UpdateApiKeyRequest>,
 ) -> Result<Json<crate::ApiKey>> {
@@ -137,7 +134,7 @@ pub async fn update_user_api_key(
 
 pub async fn delete_user_api_key(
     Extension(auth_context): Extension<AuthContext>,
-    State(api_key_service): State<Arc<crate::ApiKeyService>>,
+    State(api_key_service): State<ApiKeyServiceState>,
     Path(api_key_id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
     // Get the API key to verify ownership

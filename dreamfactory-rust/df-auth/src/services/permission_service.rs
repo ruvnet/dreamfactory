@@ -33,24 +33,24 @@ impl PermissionService {
         );
 
         // Insert permission
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO permissions (
                 id, name, description, resource, action, is_active,
                 created_date, last_modified_date, created_by_id, last_modified_by_id
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
-            permission.id,
-            permission.name,
-            permission.description,
-            permission.resource,
-            permission.action,
-            permission.is_active,
-            permission.created_date,
-            permission.last_modified_date,
-            permission.created_by_id,
-            permission.last_modified_by_id
         )
+        .bind(&permission.id)
+        .bind(&permission.name)
+        .bind(&permission.description)
+        .bind(&permission.resource)
+        .bind(&permission.action)
+        .bind(permission.is_active)
+        .bind(permission.created_date)
+        .bind(permission.last_modified_date)
+        .bind(&permission.created_by_id)
+        .bind(&permission.last_modified_by_id)
         .execute(&self.db)
         .await
         .map_err(AuthError::Database)?;
@@ -59,11 +59,10 @@ impl PermissionService {
     }
 
     pub async fn get_permission_by_id(&self, permission_id: Uuid) -> Result<Permission> {
-        let permission = sqlx::query_as!(
-            Permission,
-            "SELECT * FROM permissions WHERE id = ?",
-            permission_id
+        let permission = sqlx::query_as::<_, Permission>(
+            "SELECT * FROM permissions WHERE id = ?"
         )
+        .bind(permission_id)
         .fetch_one(&self.db)
         .await
         .map_err(|_| AuthError::Validation("Permission not found".to_string()))?;
@@ -72,12 +71,11 @@ impl PermissionService {
     }
 
     pub async fn get_permission_by_resource_action(&self, resource: &str, action: &str) -> Result<Permission> {
-        let permission = sqlx::query_as!(
-            Permission,
-            "SELECT * FROM permissions WHERE resource = ? AND action = ?",
-            resource,
-            action
+        let permission = sqlx::query_as::<_, Permission>(
+            "SELECT * FROM permissions WHERE resource = ? AND action = ?"
         )
+        .bind(resource)
+        .bind(action)
         .fetch_one(&self.db)
         .await
         .map_err(|_| AuthError::Validation("Permission not found".to_string()))?;
@@ -114,22 +112,22 @@ impl PermissionService {
         permission.last_modified_by_id = updated_by_id;
 
         // Update in database
-        sqlx::query!(
+        sqlx::query(
             r#"
             UPDATE permissions SET
                 name = ?, description = ?, resource = ?, action = ?, is_active = ?,
                 last_modified_date = ?, last_modified_by_id = ?
             WHERE id = ?
             "#,
-            permission.name,
-            permission.description,
-            permission.resource,
-            permission.action,
-            permission.is_active,
-            permission.last_modified_date,
-            permission.last_modified_by_id,
-            permission.id
         )
+        .bind(&permission.name)
+        .bind(&permission.description)
+        .bind(&permission.resource)
+        .bind(&permission.action)
+        .bind(permission.is_active)
+        .bind(permission.last_modified_date)
+        .bind(&permission.last_modified_by_id)
+        .bind(&permission.id)
         .execute(&self.db)
         .await
         .map_err(AuthError::Database)?;
@@ -139,17 +137,19 @@ impl PermissionService {
 
     pub async fn delete_permission(&self, permission_id: Uuid) -> Result<()> {
         // Check if permission is assigned to any roles
-        let role_count = sqlx::query!("SELECT COUNT(*) as count FROM role_permissions WHERE permission_id = ?", permission_id)
+        let role_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM role_permissions WHERE permission_id = ?")
+            .bind(permission_id)
             .fetch_one(&self.db)
             .await
             .map_err(AuthError::Database)?;
 
-        if role_count.count > 0 {
+        if role_count.0 > 0 {
             return Err(AuthError::Validation("Cannot delete permission assigned to roles".to_string()));
         }
 
         // Delete permission
-        sqlx::query!("DELETE FROM permissions WHERE id = ?", permission_id)
+        sqlx::query("DELETE FROM permissions WHERE id = ?")
+            .bind(permission_id)
             .execute(&self.db)
             .await
             .map_err(AuthError::Database)?;
@@ -161,12 +161,11 @@ impl PermissionService {
         let limit = limit.unwrap_or(50);
         let offset = offset.unwrap_or(0);
 
-        let permissions = sqlx::query_as!(
-            Permission,
-            "SELECT * FROM permissions ORDER BY resource, action LIMIT ? OFFSET ?",
-            limit,
-            offset
+        let permissions = sqlx::query_as::<_, Permission>(
+            "SELECT * FROM permissions ORDER BY resource, action LIMIT ? OFFSET ?"
         )
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.db)
         .await
         .map_err(AuthError::Database)?;
@@ -175,11 +174,10 @@ impl PermissionService {
     }
 
     pub async fn list_permissions_by_resource(&self, resource: &str) -> Result<Vec<Permission>> {
-        let permissions = sqlx::query_as!(
-            Permission,
-            "SELECT * FROM permissions WHERE resource = ? OR resource = '*' ORDER BY action",
-            resource
+        let permissions = sqlx::query_as::<_, Permission>(
+            "SELECT * FROM permissions WHERE resource = ? OR resource = '*' ORDER BY action"
         )
+        .bind(resource)
         .fetch_all(&self.db)
         .await
         .map_err(AuthError::Database)?;
@@ -205,8 +203,7 @@ impl PermissionService {
     }
 
     pub async fn get_roles_with_permission(&self, permission_id: Uuid) -> Result<Vec<crate::Role>> {
-        let roles = sqlx::query_as!(
-            crate::Role,
+        let roles = sqlx::query_as::<_, crate::Role>(
             r#"
             SELECT r.*
             FROM roles r
@@ -214,8 +211,8 @@ impl PermissionService {
             WHERE rp.permission_id = ? AND r.is_active = TRUE
             ORDER BY r.name
             "#,
-            permission_id
         )
+        .bind(permission_id)
         .fetch_all(&self.db)
         .await
         .map_err(AuthError::Database)?;
@@ -236,24 +233,24 @@ impl PermissionService {
             // Check if permission already exists
             if self.get_permission_by_resource_action(&permission.resource, &permission.action).await.is_err() {
                 // Insert permission
-                sqlx::query!(
+                sqlx::query(
                     r#"
                     INSERT INTO permissions (
                         id, name, description, resource, action, is_active,
                         created_date, last_modified_date, created_by_id, last_modified_by_id
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     "#,
-                    permission.id,
-                    permission.name,
-                    permission.description,
-                    permission.resource,
-                    permission.action,
-                    permission.is_active,
-                    permission.created_date,
-                    permission.last_modified_date,
-                    permission.created_by_id,
-                    permission.last_modified_by_id
                 )
+                .bind(&permission.id)
+                .bind(&permission.name)
+                .bind(&permission.description)
+                .bind(&permission.resource)
+                .bind(&permission.action)
+                .bind(permission.is_active)
+                .bind(permission.created_date)
+                .bind(permission.last_modified_date)
+                .bind(&permission.created_by_id)
+                .bind(&permission.last_modified_by_id)
                 .execute(&self.db)
                 .await
                 .map_err(AuthError::Database)?;

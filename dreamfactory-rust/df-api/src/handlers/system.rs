@@ -129,8 +129,9 @@ impl SystemServiceHandler {
     }
 }
 
+#[async_trait::async_trait]
 impl ServiceHandler for SystemServiceHandler {
-    #[instrument(skip(self, query_params, body))]
+    #[instrument(skip(self, _query_params, _body))]
     async fn handle_request(
         &self,
         route: &ApiRoute,

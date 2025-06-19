@@ -3,7 +3,7 @@ use crate::{
     PasswordService, AuthConfig
 };
 use chrono::Utc;
-use sqlx::{Pool, Sqlite};
+use sqlx::{Pool, Sqlite, Row};
 use uuid::Uuid;
 use validator::Validate;
 
@@ -43,30 +43,30 @@ impl ApiKeyService {
         );
 
         // Insert into database
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO api_keys (
                 id, name, key_hash, user_id, role_id, is_active, expires_at,
                 last_used_at, usage_count, rate_limit_per_minute, allowed_ips,
                 created_date, last_modified_date, created_by_id, last_modified_by_id
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            "#,
-            api_key_record.id,
-            api_key_record.name,
-            api_key_record.key_hash,
-            api_key_record.user_id,
-            api_key_record.role_id,
-            api_key_record.is_active,
-            api_key_record.expires_at,
-            api_key_record.last_used_at,
-            api_key_record.usage_count,
-            api_key_record.rate_limit_per_minute,
-            api_key_record.allowed_ips,
-            api_key_record.created_date,
-            api_key_record.last_modified_date,
-            api_key_record.created_by_id,
-            api_key_record.last_modified_by_id
+            "#
         )
+        .bind(api_key_record.id)
+        .bind(&api_key_record.name)
+        .bind(&api_key_record.key_hash)
+        .bind(api_key_record.user_id)
+        .bind(api_key_record.role_id)
+        .bind(api_key_record.is_active)
+        .bind(api_key_record.expires_at)
+        .bind(api_key_record.last_used_at)
+        .bind(api_key_record.usage_count)
+        .bind(api_key_record.rate_limit_per_minute)
+        .bind(&api_key_record.allowed_ips)
+        .bind(api_key_record.created_date)
+        .bind(api_key_record.last_modified_date)
+        .bind(api_key_record.created_by_id)
+        .bind(api_key_record.last_modified_by_id)
         .execute(&self.db)
         .await
         .map_err(AuthError::Database)?;
@@ -82,11 +82,10 @@ impl ApiKeyService {
     }
 
     pub async fn get_api_key_by_id(&self, api_key_id: Uuid) -> Result<ApiKey> {
-        let api_key = sqlx::query_as!(
-            ApiKey,
-            "SELECT * FROM api_keys WHERE id = ?",
-            api_key_id
+        let api_key = sqlx::query_as::<_, ApiKey>(
+            "SELECT * FROM api_keys WHERE id = ?"
         )
+        .bind(api_key_id)
         .fetch_one(&self.db)
         .await
         .map_err(|_| AuthError::ApiKeyNotFound)?;
@@ -96,8 +95,7 @@ impl ApiKeyService {
 
     pub async fn authenticate_api_key(&self, key: &str, ip_address: Option<&str>) -> Result<ApiKey> {
         // Get all active API keys to check against
-        let api_keys = sqlx::query_as!(
-            ApiKey,
+        let api_keys = sqlx::query_as::<_, ApiKey>(
             "SELECT * FROM api_keys WHERE is_active = TRUE"
         )
         .fetch_all(&self.db)
@@ -159,22 +157,22 @@ impl ApiKeyService {
         api_key.last_modified_by_id = updated_by_id;
 
         // Update in database
-        sqlx::query!(
+        sqlx::query(
             r#"
             UPDATE api_keys SET
                 name = ?, is_active = ?, expires_at = ?, rate_limit_per_minute = ?,
                 allowed_ips = ?, last_modified_date = ?, last_modified_by_id = ?
             WHERE id = ?
-            "#,
-            api_key.name,
-            api_key.is_active,
-            api_key.expires_at,
-            api_key.rate_limit_per_minute,
-            api_key.allowed_ips,
-            api_key.last_modified_date,
-            api_key.last_modified_by_id,
-            api_key.id
+            "#
         )
+        .bind(&api_key.name)
+        .bind(api_key.is_active)
+        .bind(api_key.expires_at)
+        .bind(api_key.rate_limit_per_minute)
+        .bind(&api_key.allowed_ips)
+        .bind(api_key.last_modified_date)
+        .bind(api_key.last_modified_by_id)
+        .bind(api_key.id)
         .execute(&self.db)
         .await
         .map_err(AuthError::Database)?;
@@ -183,7 +181,8 @@ impl ApiKeyService {
     }
 
     pub async fn delete_api_key(&self, api_key_id: Uuid) -> Result<()> {
-        sqlx::query!("DELETE FROM api_keys WHERE id = ?", api_key_id)
+        sqlx::query("DELETE FROM api_keys WHERE id = ?")
+            .bind(api_key_id)
             .execute(&self.db)
             .await
             .map_err(AuthError::Database)?;
@@ -196,22 +195,20 @@ impl ApiKeyService {
         let offset = offset.unwrap_or(0);
 
         let api_keys = if let Some(user_id) = user_id {
-            sqlx::query_as!(
-                ApiKey,
-                "SELECT * FROM api_keys WHERE user_id = ? ORDER BY created_date DESC LIMIT ? OFFSET ?",
-                user_id,
-                limit,
-                offset
+            sqlx::query_as::<_, ApiKey>(
+                "SELECT * FROM api_keys WHERE user_id = ? ORDER BY created_date DESC LIMIT ? OFFSET ?"
             )
+            .bind(user_id)
+            .bind(limit)
+            .bind(offset)
             .fetch_all(&self.db)
             .await
         } else {
-            sqlx::query_as!(
-                ApiKey,
-                "SELECT * FROM api_keys ORDER BY created_date DESC LIMIT ? OFFSET ?",
-                limit,
-                offset
+            sqlx::query_as::<_, ApiKey>(
+                "SELECT * FROM api_keys ORDER BY created_date DESC LIMIT ? OFFSET ?"
             )
+            .bind(limit)
+            .bind(offset)
             .fetch_all(&self.db)
             .await
         };
@@ -222,37 +219,37 @@ impl ApiKeyService {
     pub async fn get_user_permissions_for_api_key(&self, api_key: &ApiKey) -> Result<Vec<String>> {
         if let Some(user_id) = api_key.user_id {
             // Get permissions from user's roles
-            let rows = sqlx::query!(
+            let rows = sqlx::query(
                 r#"
                 SELECT DISTINCT p.resource || '.' || p.action as permission
                 FROM permissions p
                 JOIN role_permissions rp ON p.id = rp.permission_id
                 JOIN user_roles ur ON rp.role_id = ur.role_id
                 WHERE ur.user_id = ? AND p.is_active = TRUE
-                "#,
-                user_id
+                "#
             )
+            .bind(user_id)
             .fetch_all(&self.db)
             .await
             .map_err(AuthError::Database)?;
 
-            Ok(rows.into_iter().map(|row| row.permission).collect())
+            Ok(rows.into_iter().map(|row| row.get::<String, _>("permission")).collect())
         } else if let Some(role_id) = api_key.role_id {
             // Get permissions from specific role
-            let rows = sqlx::query!(
+            let rows = sqlx::query(
                 r#"
                 SELECT p.resource || '.' || p.action as permission
                 FROM permissions p
                 JOIN role_permissions rp ON p.id = rp.permission_id
                 WHERE rp.role_id = ? AND p.is_active = TRUE
-                "#,
-                role_id
+                "#
             )
+            .bind(role_id)
             .fetch_all(&self.db)
             .await
             .map_err(AuthError::Database)?;
 
-            Ok(rows.into_iter().map(|row| row.permission).collect())
+            Ok(rows.into_iter().map(|row| row.get::<String, _>("permission")).collect())
         } else {
             // No permissions if no user or role associated
             Ok(vec![])
@@ -261,10 +258,10 @@ impl ApiKeyService {
 
     pub async fn cleanup_expired_api_keys(&self) -> Result<u64> {
         let now = Utc::now();
-        let result = sqlx::query!(
-            "DELETE FROM api_keys WHERE expires_at IS NOT NULL AND expires_at < ?",
-            now
+        let result = sqlx::query(
+            "DELETE FROM api_keys WHERE expires_at IS NOT NULL AND expires_at < ?"
         )
+        .bind(now)
         .execute(&self.db)
         .await
         .map_err(AuthError::Database)?;
@@ -273,13 +270,13 @@ impl ApiKeyService {
     }
 
     async fn update_api_key_usage(&self, api_key_id: Uuid, usage_count: i64, last_used_at: Option<chrono::DateTime<Utc>>) -> Result<()> {
-        sqlx::query!(
-            "UPDATE api_keys SET usage_count = ?, last_used_at = ?, last_modified_date = ? WHERE id = ?",
-            usage_count,
-            last_used_at,
-            Utc::now(),
-            api_key_id
+        sqlx::query(
+            "UPDATE api_keys SET usage_count = ?, last_used_at = ?, last_modified_date = ? WHERE id = ?"
         )
+        .bind(usage_count)
+        .bind(last_used_at)
+        .bind(Utc::now())
+        .bind(api_key_id)
         .execute(&self.db)
         .await
         .map_err(AuthError::Database)?;

@@ -1,5 +1,5 @@
 use crate::{
-    DatabaseError, DatabaseProvider, DatabaseResult, DatabaseService, QueryParams,
+    DatabaseError, DatabaseProvider, DatabaseService, QueryParams,
     BatchRequest, BatchResponse, BatchResult, TableSchema, Relationship,
     SchemaIntrospector, QueryProcessor, SqlExecutor, RelationshipResolver,
     ComputedFieldEvaluator, ConnectionConfig, PoolConfig, ProviderCapabilities,
@@ -7,7 +7,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use serde_json::Value;
-use sqlx::{AnyPool, Pool, Any};
+use sqlx::{AnyPool, Any};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -15,7 +15,7 @@ use tokio::sync::RwLock;
 /// Main database service implementation
 pub struct DatabaseServiceImpl {
     provider: DatabaseProvider,
-    pool: AnyPool,
+    pub pool: AnyPool,
     schema_introspector: SchemaIntrospector,
     relationship_resolver: Arc<RwLock<Option<RelationshipResolver>>>,
     computed_field_evaluator: Arc<RwLock<ComputedFieldEvaluator>>,
@@ -33,6 +33,16 @@ impl DatabaseServiceImpl {
     #[cfg(test)]
     pub fn pool(&self) -> &sqlx::AnyPool {
         &self.pool
+    }
+
+    /// Get the underlying pool (for providers and advanced usage)
+    pub fn get_pool(&self) -> &sqlx::AnyPool {
+        &self.pool
+    }
+
+    /// Get access to the computed field evaluator (for testing and advanced usage)
+    pub fn computed_field_evaluator(&self) -> &Arc<RwLock<ComputedFieldEvaluator>> {
+        &self.computed_field_evaluator
     }
 
     /// Create a new database service instance
@@ -92,6 +102,7 @@ impl DatabaseServiceImpl {
     pub async fn stats(&self) -> OperationStats {
         self.stats.read().await.clone()
     }
+
 
     /// Update operation statistics
     async fn update_stats<F>(&self, operation: F) where F: FnOnce(&mut OperationStats) {
@@ -336,7 +347,7 @@ impl DatabaseService for DatabaseServiceImpl {
             let query_builder = crate::query::QueryBuilder::new(table)
                 .where_condition("id = ?".to_string(), Some(Value::String(id.to_string())));
 
-            let (query, mut params) = query_builder.build_update(&self.provider, &record);
+            let (query, params) = query_builder.build_update(&self.provider, &record);
             
             SqlExecutor::execute_modify(&self.pool, &query, &params).await?;
 
@@ -484,7 +495,7 @@ impl DatabaseService for DatabaseServiceImpl {
         }).await
     }
 
-    async fn get_relationships(&self, table: &str) -> Result<Vec<Relationship>, DatabaseError> {
+    async fn get_relationships(&self, _table: &str) -> Result<Vec<Relationship>, DatabaseError> {
         // This would typically be implemented by reading from a configuration
         // or by introspecting foreign key relationships from the database schema
         // For now, return an empty vec

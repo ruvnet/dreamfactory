@@ -4,5 +4,23 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+# Workspace dependencies
+tokio = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+# Cache-specific dependencies
+redis = { workspace = true }
+async-trait = { workspace = true }
+
+# Internal dependencies
+df-core = { path = "../df-core" }
+
+[dev-dependencies]
+tokio-test = "0.4"
+mockall = { workspace = true }

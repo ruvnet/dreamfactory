@@ -1,5 +1,5 @@
 use anyhow::Result;
-use axum::extract::Path;
+use async_trait::async_trait;
 use regex::Regex;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -27,6 +27,7 @@ pub struct RouteParams {
 }
 
 /// Service registry for handling different service types
+#[async_trait]
 pub trait ServiceHandler: Send + Sync {
     async fn handle_request(
         &self,
@@ -182,6 +183,7 @@ mod tests {
         let mut registry = ServiceRegistry::new();
         
         struct TestHandler;
+        #[async_trait]
         impl ServiceHandler for TestHandler {
             async fn handle_request(
                 &self,

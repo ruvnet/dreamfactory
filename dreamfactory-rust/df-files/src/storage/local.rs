@@ -1,5 +1,5 @@
 use crate::models::{
-    config::{FileServiceConfig, LocalConfig, ProviderConfig, StorageProvider as ConfigStorageProvider},
+    config::{FileServiceConfig, LocalConfig, ProviderConfig},
     error::{FileResult, FileServiceError},
     file_info::{DirectoryListing, FileInfo},
     file_operation::{
@@ -10,25 +10,25 @@ use crate::models::{
 };
 use crate::traits::{
     file_service::{
-        AdvancedFileService, FileService, FileServiceInfo, PresignedOperation, SearchCriteria,
-        ServiceFeature, ServiceLimits, StorageUsage, StreamingFileService,
+        FileService, FileServiceInfo, PresignedOperation, SearchCriteria,
+        ServiceFeature, ServiceLimits, StorageUsage,
     },
     storage_provider::{ProviderCapabilities, ProviderHealth, ProviderStatistics, StorageProvider},
 };
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
-use futures::{stream, Stream, StreamExt, TryStreamExt};
+use chrono::Utc;
+use futures::{StreamExt, TryStreamExt};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex as StdMutex},
     time::SystemTime,
 };
 use tokio::{
     fs::{self, File},
     io::{AsyncReadExt, AsyncWriteExt, BufReader},
+    sync::Mutex as TokioMutex,
 };
 use walkdir::WalkDir;
 
@@ -38,8 +38,8 @@ pub struct LocalStorageProvider {
     local_config: LocalConfig,
     root_path: PathBuf,
     initialized: bool,
-    statistics: Arc<Mutex<ProviderStatistics>>,
-    multipart_uploads: Arc<Mutex<HashMap<String, MultipartUpload>>>,
+    statistics: Arc<StdMutex<ProviderStatistics>>,
+    multipart_uploads: Arc<TokioMutex<HashMap<String, MultipartUpload>>>,
 }
 
 impl LocalStorageProvider {
@@ -61,8 +61,8 @@ impl LocalStorageProvider {
             local_config,
             root_path,
             initialized: false,
-            statistics: Arc::new(Mutex::new(ProviderStatistics::default())),
-            multipart_uploads: Arc::new(Mutex::new(HashMap::new())),
+            statistics: Arc::new(StdMutex::new(ProviderStatistics::default())),
+            multipart_uploads: Arc::new(TokioMutex::new(HashMap::new())),
         })
     }
 
@@ -262,9 +262,8 @@ impl StorageProvider for LocalStorageProvider {
 
     async fn shutdown(&mut self) -> FileResult<()> {
         // Clear any in-progress multipart uploads
-        if let Ok(mut uploads) = self.multipart_uploads.lock() {
-            uploads.clear();
-        }
+        let mut uploads = self.multipart_uploads.lock().await;
+        uploads.clear();
 
         self.initialized = false;
         Ok(())
@@ -379,7 +378,7 @@ impl FileService for LocalStorageProvider {
             limits: ServiceLimits {
                 max_file_size: self.config.max_file_size,
                 max_files_per_directory: None,
-                max_directory_depth: self.config.max_directory_depth.map(|d| d as u64),
+                max_directory_depth: self.config.max_directory_depth,
                 max_path_length: Some(4096),
                 max_metadata_size: Some(64 * 1024),
                 rate_limits: None,
@@ -418,22 +417,22 @@ impl FileService for LocalStorageProvider {
         // Create parent directories if needed
         if options.create_parents {
             if let Some(parent) = full_path.parent() {
-                fs::create_dir_all(parent).await.map_err(|e| {
+                if let Err(e) = fs::create_dir_all(parent).await {
                     self.record_operation(false, None);
-                    FileServiceError::IoError {
+                    return Err(FileServiceError::IoError {
                         message: format!("Failed to create parent directories: {}", e),
-                    }
-                })?;
+                    });
+                }
             }
         }
 
         // Write file content
-        fs::write(&full_path, &content).await.map_err(|e| {
+        if let Err(e) = fs::write(&full_path, &content).await {
             self.record_operation(false, None);
-            FileServiceError::IoError {
+            return Err(FileServiceError::IoError {
                 message: format!("Failed to write file: {}", e),
-            }
-        })?;
+            });
+        }
 
         // Set permissions if specified
         #[cfg(unix)]
@@ -475,48 +474,54 @@ impl FileService for LocalStorageProvider {
         // Create parent directories if needed
         if options.create_parents {
             if let Some(parent) = full_path.parent() {
-                fs::create_dir_all(parent).await.map_err(|e| {
+                if let Err(e) = fs::create_dir_all(parent).await {
                     self.record_operation(false, None);
-                    FileServiceError::IoError {
+                    return Err(FileServiceError::IoError {
                         message: format!("Failed to create parent directories: {}", e),
-                    }
-                })?;
+                    });
+                }
             }
         }
 
         // Create and write to file
-        let mut file = File::create(&full_path).await.map_err(|e| {
-            self.record_operation(false, None);
-            FileServiceError::IoError {
-                message: format!("Failed to create file: {}", e),
+        let mut file = match File::create(&full_path).await {
+            Ok(file) => file,
+            Err(e) => {
+                self.record_operation(false, None);
+                return Err(FileServiceError::IoError {
+                    message: format!("Failed to create file: {}", e),
+                });
             }
-        })?;
+        };
 
         let mut bytes_transferred = 0u64;
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| {
-                self.record_operation(false, Some(bytes_transferred));
-                FileServiceError::IoError {
-                    message: format!("Failed to read stream: {}", e),
+            let chunk = match chunk {
+                Ok(chunk) => chunk,
+                Err(e) => {
+                    self.record_operation(false, Some(bytes_transferred));
+                    return Err(FileServiceError::IoError {
+                        message: format!("Failed to read stream: {}", e),
+                    });
                 }
-            })?;
+            };
 
-            file.write_all(&chunk).await.map_err(|e| {
+            if let Err(e) = file.write_all(&chunk).await {
                 self.record_operation(false, Some(bytes_transferred));
-                FileServiceError::IoError {
+                return Err(FileServiceError::IoError {
                     message: format!("Failed to write to file: {}", e),
-                }
-            })?;
+                });
+            }
 
             bytes_transferred += chunk.len() as u64;
         }
 
-        file.flush().await.map_err(|e| {
+        if let Err(e) = file.flush().await {
             self.record_operation(false, Some(bytes_transferred));
-            FileServiceError::IoError {
+            return Err(FileServiceError::IoError {
                 message: format!("Failed to flush file: {}", e),
-            }
-        })?;
+            });
+        }
 
         // Set permissions if specified
         #[cfg(unix)]
@@ -562,7 +567,7 @@ impl FileService for LocalStorageProvider {
 
         let content = if let Some((start, end)) = options.range {
             // Range download
-            let mut file = File::open(&full_path).await.map_err(|e| {
+            let file = File::open(&full_path).await.map_err(|e| {
                 self.record_operation(false, None);
                 FileServiceError::IoError {
                     message: format!("Failed to open file: {}", e),
@@ -799,7 +804,7 @@ impl FileService for LocalStorageProvider {
             // Set permissions if on Unix and requested
             #[cfg(unix)]
             if options.preserve_permissions {
-                use std::os::unix::fs::PermissionsExt;
+                
                 let perms = metadata.permissions();
                 std::fs::set_permissions(&dest_path, perms).map_err(|e| {
                     FileServiceError::IoError {
@@ -1120,7 +1125,7 @@ impl FileService for LocalStorageProvider {
 
                         #[cfg(unix)]
                         if options.preserve_permissions {
-                            use std::os::unix::fs::PermissionsExt;
+                            
                             let perms = metadata.permissions();
                             std::fs::set_permissions(&dest_entry_path, perms).map_err(|e| {
                                 FileServiceError::IoError {
@@ -1256,9 +1261,8 @@ impl FileService for LocalStorageProvider {
             metadata: options.metadata,
         };
 
-        if let Ok(mut uploads) = self.multipart_uploads.lock() {
-            uploads.insert(upload_id.clone(), upload.clone());
-        }
+        let mut uploads = self.multipart_uploads.lock().await;
+        uploads.insert(upload_id.clone(), upload.clone());
 
         Ok(upload)
     }
@@ -1269,11 +1273,7 @@ impl FileService for LocalStorageProvider {
         part_number: u32,
         content: Bytes,
     ) -> FileResult<UploadPart> {
-        let mut uploads = self.multipart_uploads.lock().map_err(|_| {
-            FileServiceError::InternalError {
-                message: "Failed to lock multipart uploads".to_string(),
-            }
-        })?;
+        let mut uploads = self.multipart_uploads.lock().await;
 
         let upload = uploads.get_mut(upload_id).ok_or_else(|| {
             FileServiceError::InvalidMultipartUpload {
@@ -1310,11 +1310,7 @@ impl FileService for LocalStorageProvider {
         upload_id: &str,
         _parts: Vec<UploadPart>,
     ) -> FileResult<FileOperationResult> {
-        let mut uploads = self.multipart_uploads.lock().map_err(|_| {
-            FileServiceError::InternalError {
-                message: "Failed to lock multipart uploads".to_string(),
-            }
-        })?;
+        let mut uploads = self.multipart_uploads.lock().await;
 
         let upload = uploads.remove(upload_id).ok_or_else(|| {
             FileServiceError::InvalidMultipartUpload {
@@ -1376,11 +1372,7 @@ impl FileService for LocalStorageProvider {
     }
 
     async fn abort_multipart_upload(&self, upload_id: &str) -> FileResult<FileOperationResult> {
-        let mut uploads = self.multipart_uploads.lock().map_err(|_| {
-            FileServiceError::InternalError {
-                message: "Failed to lock multipart uploads".to_string(),
-            }
-        })?;
+        let mut uploads = self.multipart_uploads.lock().await;
 
         let upload = uploads.remove(upload_id).ok_or_else(|| {
             FileServiceError::InvalidMultipartUpload {
@@ -1399,11 +1391,7 @@ impl FileService for LocalStorageProvider {
     }
 
     async fn list_multipart_uploads(&self) -> FileResult<Vec<MultipartUpload>> {
-        let uploads = self.multipart_uploads.lock().map_err(|_| {
-            FileServiceError::InternalError {
-                message: "Failed to lock multipart uploads".to_string(),
-            }
-        })?;
+        let uploads = self.multipart_uploads.lock().await;
 
         Ok(uploads.values().cloned().collect())
     }

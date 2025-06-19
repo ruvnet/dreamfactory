@@ -1,5 +1,5 @@
 use crate::models::{
-    error::{FileResult, FileServiceError},
+    error::FileResult,
     file_info::{DirectoryListing, FileInfo},
     file_operation::{
         BatchOperation, BatchOperationResult, CopyOptions, DownloadOptions, FileOperationResult,

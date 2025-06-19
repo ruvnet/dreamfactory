@@ -39,5 +39,5 @@ composer.json.full_debug
 composer.json-install-bkup
 after.sh
 .vscode
-
+target
 /.phpunit.cache

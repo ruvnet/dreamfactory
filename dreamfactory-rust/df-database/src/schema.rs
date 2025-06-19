@@ -1,7 +1,7 @@
 use crate::DatabaseError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use sqlx::Row;
 
 /// Database table schema information
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -205,9 +205,9 @@ impl SchemaIntrospector {
             let column_default: Option<String> = row.try_get("COLUMN_DEFAULT").ok();
             let extra: String = row.try_get("EXTRA")?;
             let column_comment: Option<String> = row.try_get("COLUMN_COMMENT").ok();
-            let max_length: Option<u32> = row.try_get("CHARACTER_MAXIMUM_LENGTH").ok();
-            let precision: Option<u32> = row.try_get("NUMERIC_PRECISION").ok();
-            let scale: Option<u32> = row.try_get("NUMERIC_SCALE").ok();
+            let max_length: Option<i64> = row.try_get("CHARACTER_MAXIMUM_LENGTH").ok();
+            let precision: Option<i64> = row.try_get("NUMERIC_PRECISION").ok();
+            let scale: Option<i64> = row.try_get("NUMERIC_SCALE").ok();
             let column_key: String = row.try_get("COLUMN_KEY")?;
 
             let is_primary = column_key.contains("PRI");
@@ -221,9 +221,9 @@ impl SchemaIntrospector {
                 description: column_comment,
                 field_type: self.map_mysql_type_to_df_type(&data_type),
                 db_type: Some(column_type),
-                length: max_length,
-                precision,
-                scale,
+                length: max_length.and_then(|l| if l >= 0 { Some(l as u32) } else { None }),
+                precision: precision.and_then(|p| if p >= 0 { Some(p as u32) } else { None }),
+                scale: scale.and_then(|s| if s >= 0 { Some(s as u32) } else { None }),
                 default_value: column_default.map(|v| serde_json::Value::String(v)),
                 required: Some(is_nullable == "NO"),
                 allow_null: Some(is_nullable == "YES"),

@@ -40,6 +40,7 @@ filetime = "0.2"
 
 # Async traits
 async-trait = "0.1"
+async-stream = "0.3"
 
 # Error handling and utilities
 once_cell = "1.19"

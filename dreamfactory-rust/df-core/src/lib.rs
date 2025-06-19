@@ -17,6 +17,7 @@ pub mod service;
 pub mod config;
 pub mod registry;
 pub mod plugin;
+pub mod integration;
 
 
 // Re-export commonly used types
@@ -25,6 +26,7 @@ pub use service::{Service, ServiceState, ServiceInfo};
 pub use config::{Config, ConfigBuilder, ConfigError};
 pub use registry::{ServiceRegistry, RegistryError};
 pub use plugin::{Plugin, PluginManager, PluginError};
+pub use integration::{IntegratedServiceRegistry, ApiServiceHandler, ServiceContext, ApiRoute};
 
 // Prelude module for convenient imports
 pub mod prelude {
@@ -34,6 +36,7 @@ pub mod prelude {
         Config, ConfigBuilder,
         ServiceRegistry,
         Plugin, PluginManager,
+        IntegratedServiceRegistry, ApiServiceHandler, ServiceContext, ApiRoute,
     };
     pub use async_trait::async_trait;
     pub use uuid::Uuid;

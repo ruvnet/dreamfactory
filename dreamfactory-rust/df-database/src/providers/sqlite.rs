@@ -21,6 +21,11 @@ impl SqliteProvider {
         self.inner.pool()
     }
 
+    /// Get access to the computed field evaluator (for testing)
+    pub fn computed_field_evaluator(&self) -> &std::sync::Arc<tokio::sync::RwLock<crate::ComputedFieldEvaluator>> {
+        self.inner.computed_field_evaluator()
+    }
+
     /// Create a new SQLite provider instance
     pub async fn new(config: ConnectionConfig, pool_config: PoolConfig) -> Result<Self, DatabaseError> {
         // Validate that we're using SQLite
@@ -64,7 +69,7 @@ impl SqliteProvider {
     pub async fn get_version(&self) -> Result<String, DatabaseError> {
         let query = "SELECT sqlite_version() as version";
         let result = crate::query::SqlExecutor::execute_select(
-            &self.inner.pool,
+            self.inner.get_pool(),
             query,
             &[],
         ).await?;
@@ -82,7 +87,7 @@ impl SqliteProvider {
     /// Get SQLite-specific database file size
     pub async fn get_database_size(&self) -> Result<i64, DatabaseError> {
         let query = "SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()";
-        let result = crate::query::SqlExecutor::execute_select(&self.inner.pool, query, &[]).await?;
+        let result = crate::query::SqlExecutor::execute_select(self.inner.get_pool(), query, &[]).await?;
 
         result
             .first()
@@ -96,25 +101,25 @@ impl SqliteProvider {
     /// Get SQLite-specific table information using PRAGMA
     pub async fn pragma_table_info(&self, table: &str) -> Result<Vec<serde_json::Value>, DatabaseError> {
         let query = format!("PRAGMA table_info({})", table);
-        crate::query::SqlExecutor::execute_select(&self.inner.pool, &query, &[]).await
+        crate::query::SqlExecutor::execute_select(self.inner.get_pool(), &query, &[]).await
     }
 
     /// Get SQLite-specific index information using PRAGMA
     pub async fn pragma_index_list(&self, table: &str) -> Result<Vec<serde_json::Value>, DatabaseError> {
         let query = format!("PRAGMA index_list({})", table);
-        crate::query::SqlExecutor::execute_select(&self.inner.pool, &query, &[]).await
+        crate::query::SqlExecutor::execute_select(self.inner.get_pool(), &query, &[]).await
     }
 
     /// Get SQLite-specific index details using PRAGMA
     pub async fn pragma_index_info(&self, index: &str) -> Result<Vec<serde_json::Value>, DatabaseError> {
         let query = format!("PRAGMA index_info({})", index);
-        crate::query::SqlExecutor::execute_select(&self.inner.pool, &query, &[]).await
+        crate::query::SqlExecutor::execute_select(self.inner.get_pool(), &query, &[]).await
     }
 
     /// Get SQLite-specific foreign key information using PRAGMA
     pub async fn pragma_foreign_key_list(&self, table: &str) -> Result<Vec<serde_json::Value>, DatabaseError> {
         let query = format!("PRAGMA foreign_key_list({})", table);
-        crate::query::SqlExecutor::execute_select(&self.inner.pool, &query, &[]).await
+        crate::query::SqlExecutor::execute_select(self.inner.get_pool(), &query, &[]).await
     }
 
     /// Get SQLite-specific index information in standard format
@@ -195,7 +200,7 @@ impl SqliteProvider {
     /// Execute SQLite-specific PRAGMA command
     pub async fn pragma_command(&self, pragma: &str) -> Result<Vec<serde_json::Value>, DatabaseError> {
         let query = format!("PRAGMA {}", pragma);
-        crate::query::SqlExecutor::execute_select(&self.inner.pool, &query, &[]).await
+        crate::query::SqlExecutor::execute_select(self.inner.get_pool(), &query, &[]).await
     }
 
     /// Get SQLite-specific database settings
@@ -221,8 +226,10 @@ impl SqliteProvider {
             match self.pragma_command(pragma).await {
                 Ok(result) => {
                     if let Some(row) = result.first() {
-                        if let Some(value) = row.values().next() {
-                            settings.insert(pragma.to_string(), value.clone());
+                        if let Some(obj) = row.as_object() {
+                            if let Some(value) = obj.values().next() {
+                                settings.insert(pragma.to_string(), value.clone());
+                            }
                         }
                     }
                 }
@@ -238,7 +245,7 @@ impl SqliteProvider {
 
     /// Execute SQLite-specific VACUUM command
     pub async fn vacuum(&self) -> Result<(), DatabaseError> {
-        crate::query::SqlExecutor::execute_modify(&self.inner.pool, "VACUUM", &[]).await?;
+        crate::query::SqlExecutor::execute_modify(self.inner.get_pool(), "VACUUM", &[]).await?;
         Ok(())
     }
 
@@ -248,7 +255,7 @@ impl SqliteProvider {
             Some(table_name) => format!("ANALYZE {}", table_name),
             None => "ANALYZE".to_string(),
         };
-        crate::query::SqlExecutor::execute_modify(&self.inner.pool, &query, &[]).await?;
+        crate::query::SqlExecutor::execute_modify(self.inner.get_pool(), &query, &[]).await?;
         Ok(())
     }
 
@@ -265,7 +272,7 @@ impl SqliteProvider {
             ORDER BY name
         "#;
 
-        crate::query::SqlExecutor::execute_select(&self.inner.pool, query, &[]).await
+        crate::query::SqlExecutor::execute_select(self.inner.get_pool(), query, &[]).await
     }
 
     /// Check if foreign key constraints are enabled
@@ -274,7 +281,8 @@ impl SqliteProvider {
         
         Ok(result
             .first()
-            .and_then(|row| row.values().next())
+            .and_then(|row| row.as_object())
+            .and_then(|obj| obj.values().next())
             .and_then(|v| v.as_i64())
             .map(|i| i != 0)
             .unwrap_or(false))
@@ -283,9 +291,10 @@ impl SqliteProvider {
     /// Enable or disable foreign key constraints
     pub async fn set_foreign_keys(&self, enabled: bool) -> Result<(), DatabaseError> {
         let query = format!("PRAGMA foreign_keys = {}", if enabled { 1 } else { 0 });
-        crate::query::SqlExecutor::execute_modify(&self.inner.pool, &query, &[]).await?;
+        crate::query::SqlExecutor::execute_modify(self.inner.get_pool(), &query, &[]).await?;
         Ok(())
     }
+
 
     /// Get SQLite compile options
     pub async fn get_compile_options(&self) -> Result<Vec<String>, DatabaseError> {
@@ -294,7 +303,7 @@ impl SqliteProvider {
 
         loop {
             let query = format!("SELECT sqlite_compileoption_get({}) as option", id);
-            match crate::query::SqlExecutor::execute_select(&self.inner.pool, &query, &[]).await {
+            match crate::query::SqlExecutor::execute_select(self.inner.get_pool(), &query, &[]).await {
                 Ok(result) => {
                     if let Some(row) = result.first() {
                         if let Some(option) = row.get("option").and_then(|v| v.as_str()) {

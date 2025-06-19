@@ -96,7 +96,7 @@ impl RelationshipResolver {
     /// Execute a single relationship
     async fn execute_single_relationship(
         &self,
-        table: &str,
+        _table: &str,
         records: &mut Vec<Value>,
         relationship: &Relationship,
     ) -> Result<(), DatabaseError> {

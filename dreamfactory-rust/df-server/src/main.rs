@@ -4,13 +4,12 @@ use clap::Parser;
 use df_api::{create_api_router, init_tracing, ApiConfig};
 use std::net::SocketAddr;
 use tokio::signal;
-use tower::ServiceBuilder;
 use tower_http::{
     compression::CompressionLayer,
     timeout::TimeoutLayer,
     limit::RequestBodyLimitLayer,
 };
-use tracing::{info, warn, error};
+use tracing::info;
 
 mod config;
 use config::ServerConfig;
@@ -96,19 +95,16 @@ async fn create_application_router(
     // Build the main application with middleware
     let app = Router::new()
         .merge(api_router)
-        .layer(
-            ServiceBuilder::new()
-                // Timeout layer
-                .layer(TimeoutLayer::new(
-                    std::time::Duration::from_secs(server_config.server.timeout_seconds)
-                ))
-                // Request body size limit
-                .layer(RequestBodyLimitLayer::new(
-                    server_config.server.max_request_size
-                ))
-                // Compression
-                .layer(CompressionLayer::new())
-        );
+        // Apply compression
+        .layer(CompressionLayer::new())
+        // Apply timeout
+        .layer(TimeoutLayer::new(
+            std::time::Duration::from_secs(server_config.server.timeout_seconds)
+        ))
+        // Apply request body size limit
+        .layer(RequestBodyLimitLayer::new(
+            server_config.server.max_request_size
+        ));
 
     info!("Application router created successfully");
     Ok(app)

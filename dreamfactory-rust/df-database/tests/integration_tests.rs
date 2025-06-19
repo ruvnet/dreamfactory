@@ -2,7 +2,6 @@ use df_database::*;
 use serde_json::json;
 use serial_test::serial;
 use std::collections::HashMap;
-use tokio_test;
 
 #[tokio::test]
 #[serial]
@@ -264,7 +263,7 @@ async fn test_schema_introspection() {
     let name_field = schema.field.iter().find(|f| f.name == "name").unwrap();
     assert_eq!(name_field.required, Some(true));
 
-    let email_field = schema.field.iter().find(|f| f.name == "email").unwrap();
+    let _email_field = schema.field.iter().find(|f| f.name == "email").unwrap();
     assert_eq!(name_field.field_type, "string");
 
     // Test all schemas
@@ -294,7 +293,7 @@ async fn test_computed_fields() {
     provider.execute_raw_sql(create_table_sql).await.unwrap();
 
     // Add computed field for full name
-    let mut evaluator = provider.computed_field_evaluator.write().await;
+    let mut evaluator = provider.computed_field_evaluator().write().await;
     evaluator.add_computed_field("employees", ComputedField {
         name: "full_name".to_string(),
         label: Some("Full Name".to_string()),
@@ -465,7 +464,7 @@ async fn test_transaction_support() {
     assert_eq!(batch_result.resources.len(), 3);
     
     // Check that no records were actually inserted due to rollback
-    let records = provider
+    let _records = provider
         .get_records("transaction_test", &QueryParams::default())
         .await
         .unwrap();

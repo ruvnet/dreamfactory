@@ -1,8 +1,8 @@
 use crate::{
-    AuthError, Result, AuthContext, UserService, RoleService, PermissionService, 
-    ApiKeyService, SessionService, CreateUserRequest, UpdateUserRequest,
-    CreateRoleRequest, UpdateRoleRequest, CreatePermissionRequest, UpdatePermissionRequest,
-    CreateApiKeyRequest, UpdateApiKeyRequest
+    AuthError, Result, AuthContext, CreateUserRequest, UpdateUserRequest,
+    CreateRoleRequest, UpdateRoleRequest, CreatePermissionRequest,
+    CreateApiKeyRequest, UpdateApiKeyRequest, UserServiceState, RoleServiceState,
+    PermissionServiceState, ApiKeyServiceState, SessionServiceState
 };
 use axum::{
     extract::{Extension, Path, Query, State},
@@ -11,14 +11,8 @@ use axum::{
     Json as JsonBody,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use uuid::Uuid;
 
-pub type UserServiceState = Arc<UserService>;
-pub type RoleServiceState = Arc<RoleService>;
-pub type PermissionServiceState = Arc<PermissionService>;
-pub type ApiKeyServiceState = Arc<ApiKeyService>;
-pub type SessionServiceState = Arc<SessionService>;
 
 #[derive(Deserialize)]
 pub struct ListQuery {
@@ -306,7 +300,7 @@ pub async fn admin_delete_api_key(
 // Session Management Handlers
 pub async fn admin_list_sessions(
     Extension(auth_context): Extension<AuthContext>,
-    State(session_service): State<SessionServiceState>,
+    State(_session_service): State<SessionServiceState>,
 ) -> Result<Json<Vec<crate::Session>>> {
     if !auth_context.has_permission("session", "list") {
         return Err(AuthError::PermissionDenied);

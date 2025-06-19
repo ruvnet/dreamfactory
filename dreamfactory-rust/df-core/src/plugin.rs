@@ -7,13 +7,13 @@
 //! - Safe plugin isolation and communication
 
 use crate::error::{DfError, DfResult};
-use crate::service::{Service, ServiceInfo, ServiceState};
-use async_trait::async_trait;
 use libloading::{Library, Symbol};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::OsStr;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -48,7 +48,7 @@ pub enum PluginError {
 
 impl From<PluginError> for DfError {
     fn from(err: PluginError) -> Self {
-        DfError::plugin("unknown", err.to_string())
+        DfError::plugin("unknown", &err.to_string())
     }
 }
 
@@ -151,6 +151,7 @@ impl PluginInfo {
 
 /// Plugin state enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(C)]
 pub enum PluginState {
     /// Plugin is discovered but not loaded
     Discovered,
@@ -177,7 +178,7 @@ pub enum PluginState {
 }
 
 /// Plugin trait that all plugins must implement
-#[async_trait]
+/// This trait is dyn-compatible by using Pin<Box<dyn Future<...>>> for async methods
 pub trait Plugin: Send + Sync {
     /// Get plugin information
     fn info(&self) -> &PluginInfo;
@@ -186,18 +187,18 @@ pub trait Plugin: Send + Sync {
     fn state(&self) -> PluginState;
 
     /// Initialize the plugin
-    async fn initialize(&mut self) -> DfResult<()>;
+    fn initialize(&mut self) -> Pin<Box<dyn Future<Output = DfResult<()>> + Send + '_>>;
 
     /// Start the plugin
-    async fn start(&mut self) -> DfResult<()>;
+    fn start(&mut self) -> Pin<Box<dyn Future<Output = DfResult<()>> + Send + '_>>;
 
     /// Stop the plugin
-    async fn stop(&mut self) -> DfResult<()>;
+    fn stop(&mut self) -> Pin<Box<dyn Future<Output = DfResult<()>> + Send + '_>>;
 
     /// Handle plugin events
-    async fn handle_event(&mut self, event: PluginEvent) -> DfResult<()> {
+    fn handle_event(&mut self, _event: PluginEvent) -> Pin<Box<dyn Future<Output = DfResult<()>> + Send + '_>> {
         // Default implementation does nothing
-        Ok(())
+        Box::pin(async move { Ok(()) })
     }
 
     /// Get plugin capabilities
@@ -228,8 +229,154 @@ pub enum PluginEvent {
     Custom { event_type: String, data: serde_json::Value },
 }
 
-/// Plugin entry point function type
-pub type PluginEntryPoint = unsafe extern "C" fn() -> *mut dyn Plugin;
+/// FFI-safe plugin interface using opaque pointers and function pointers
+#[repr(C)]
+pub struct PluginVTable {
+    pub get_info: unsafe extern "C" fn(*const std::ffi::c_void) -> *const PluginInfo,
+    pub get_state: unsafe extern "C" fn(*const std::ffi::c_void) -> PluginState,
+    pub initialize: unsafe extern "C" fn(*mut std::ffi::c_void) -> i32,
+    pub start: unsafe extern "C" fn(*mut std::ffi::c_void) -> i32,
+    pub stop: unsafe extern "C" fn(*mut std::ffi::c_void) -> i32,
+    pub handle_event: unsafe extern "C" fn(*mut std::ffi::c_void, *const PluginEvent) -> i32,
+    pub destroy: unsafe extern "C" fn(*mut std::ffi::c_void),
+}
+
+/// FFI-safe plugin instance containing opaque pointer and vtable
+#[repr(C)]
+pub struct PluginInstance {
+    pub data: *mut std::ffi::c_void,
+    pub vtable: *const PluginVTable,
+}
+
+/// Plugin entry point function type (FFI-safe)
+pub type PluginEntryPoint = unsafe extern "C" fn() -> *mut PluginInstance;
+
+/// Wrapper that implements Plugin trait using FFI-safe plugin instance
+pub struct PluginWrapper {
+    instance: *mut PluginInstance,
+    info: PluginInfo,
+}
+
+impl PluginWrapper {
+    /// Create a new plugin wrapper from FFI plugin instance
+    pub unsafe fn new(instance: *mut PluginInstance) -> DfResult<Self> {
+        if instance.is_null() {
+            return Err(DfError::plugin("wrapper", "Plugin instance is null"));
+        }
+        
+        let instance_ref = &*instance;
+        if instance_ref.data.is_null() || instance_ref.vtable.is_null() {
+            return Err(DfError::plugin("wrapper", "Plugin instance data or vtable is null"));
+        }
+        
+        // Get plugin info
+        let vtable = &*instance_ref.vtable;
+        let info_ptr = (vtable.get_info)(instance_ref.data);
+        if info_ptr.is_null() {
+            return Err(DfError::plugin("wrapper", "Failed to get plugin info"));
+        }
+        
+        let info = (*info_ptr).clone();
+        
+        Ok(Self {
+            instance,
+            info,
+        })
+    }
+}
+
+impl Plugin for PluginWrapper {
+    fn info(&self) -> &PluginInfo {
+        &self.info
+    }
+
+    fn state(&self) -> PluginState {
+        unsafe {
+            let instance_ref = &*self.instance;
+            let vtable = &*instance_ref.vtable;
+            (vtable.get_state)(instance_ref.data)
+        }
+    }
+
+    fn initialize(&mut self) -> Pin<Box<dyn Future<Output = DfResult<()>> + Send + '_>> {
+        Box::pin(async move {
+            unsafe {
+                let instance_ref = &*self.instance;
+                let vtable = &*instance_ref.vtable;
+                let result = (vtable.initialize)(instance_ref.data);
+                if result == 0 {
+                    Ok(())
+                } else {
+                    Err(DfError::plugin(&self.info.name, "Plugin initialization failed"))
+                }
+            }
+        })
+    }
+
+    fn start(&mut self) -> Pin<Box<dyn Future<Output = DfResult<()>> + Send + '_>> {
+        Box::pin(async move {
+            unsafe {
+                let instance_ref = &*self.instance;
+                let vtable = &*instance_ref.vtable;
+                let result = (vtable.start)(instance_ref.data);
+                if result == 0 {
+                    Ok(())
+                } else {
+                    Err(DfError::plugin(&self.info.name, "Plugin start failed"))
+                }
+            }
+        })
+    }
+
+    fn stop(&mut self) -> Pin<Box<dyn Future<Output = DfResult<()>> + Send + '_>> {
+        Box::pin(async move {
+            unsafe {
+                let instance_ref = &*self.instance;
+                let vtable = &*instance_ref.vtable;
+                let result = (vtable.stop)(instance_ref.data);
+                if result == 0 {
+                    Ok(())
+                } else {
+                    Err(DfError::plugin(&self.info.name, "Plugin stop failed"))
+                }
+            }
+        })
+    }
+
+    fn handle_event(&mut self, event: PluginEvent) -> Pin<Box<dyn Future<Output = DfResult<()>> + Send + '_>> {
+        Box::pin(async move {
+            unsafe {
+                let instance_ref = &*self.instance;
+                let vtable = &*instance_ref.vtable;
+                let result = (vtable.handle_event)(instance_ref.data, &event as *const PluginEvent);
+                if result == 0 {
+                    Ok(())
+                } else {
+                    Err(DfError::plugin(&self.info.name, "Plugin event handling failed"))
+                }
+            }
+        })
+    }
+}
+
+impl Drop for PluginWrapper {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.instance.is_null() {
+                let instance_ref = &*self.instance;
+                if !instance_ref.vtable.is_null() {
+                    let vtable = &*instance_ref.vtable;
+                    (vtable.destroy)(instance_ref.data);
+                }
+            }
+        }
+    }
+}
+
+// Safety: PluginWrapper is Send if the underlying plugin implementation is thread-safe
+unsafe impl Send for PluginWrapper {}
+// Safety: PluginWrapper is Sync if the underlying plugin implementation is thread-safe
+unsafe impl Sync for PluginWrapper {}
 
 /// Loaded plugin container
 struct LoadedPlugin {
@@ -237,6 +384,32 @@ struct LoadedPlugin {
     library: Library,
     path: PathBuf,
     state: PluginState,
+}
+
+impl LoadedPlugin {
+    /// Get the plugin's library path
+    pub fn path(&self) -> &PathBuf {
+        &self.path
+    }
+
+    /// Get the plugin's file name
+    pub fn file_name(&self) -> Option<&str> {
+        self.path.file_name()?.to_str()
+    }
+
+    /// Check if the plugin was loaded from the given path
+    pub fn is_from_path(&self, path: &Path) -> bool {
+        self.path == path
+    }
+
+    /// Check if the library is still valid (this keeps the library reference alive)
+    /// The library field must be kept alive to prevent the dynamic library from being unloaded
+    pub fn is_library_loaded(&self) -> bool {
+        // The library field is intentionally accessed here to prevent it from being
+        // considered dead code. The Library object must stay alive for the entire
+        // lifetime of the plugin to keep the dynamic library loaded in memory.
+        std::ptr::addr_of!(self.library) as *const _ != std::ptr::null()
+    }
 }
 
 /// Plugin manager for loading and managing plugins
@@ -296,11 +469,12 @@ impl PluginManager {
                 continue;
             }
 
-            let mut entries = tokio::fs::read_dir(directory).await
-                .map_err(|e| DfError::plugin("manager", format!("Failed to read directory: {}", e)))?;
+            let entries = std::fs::read_dir(directory)
+                .map_err(|e| DfError::plugin("manager", &format!("Failed to read directory: {}", e)))?;
 
-            while let Some(entry) = entries.next_entry().await
-                .map_err(|e| DfError::plugin("manager", format!("Failed to read entry: {}", e)))? {
+            for entry in entries {
+                let entry = entry
+                    .map_err(|e| DfError::plugin("manager", format!("Failed to read entry: {}", e).as_str()))?;
                 
                 let path = entry.path();
                 
@@ -368,15 +542,17 @@ impl PluginManager {
         };
 
         // Create the plugin instance
-        let plugin_ptr = unsafe { entry_point() };
-        if plugin_ptr.is_null() {
+        let plugin_instance_ptr = unsafe { entry_point() };
+        if plugin_instance_ptr.is_null() {
             return Err(PluginError::LoadingFailed {
                 path: path.display().to_string(),
                 reason: "Entry point returned null".to_string(),
             }.into());
         }
 
-        let plugin = unsafe { Box::from_raw(plugin_ptr) };
+        // Create plugin wrapper
+        let plugin_wrapper = unsafe { PluginWrapper::new(plugin_instance_ptr)? };
+        let plugin: Box<dyn Plugin> = Box::new(plugin_wrapper);
 
         // Validate API version
         let plugin_api_version = &plugin.info().api_version;
@@ -527,6 +703,52 @@ impl PluginManager {
         }
     }
 
+    /// Get plugin path by name
+    pub async fn get_plugin_path(&self, name: &str) -> DfResult<PathBuf> {
+        let plugins = self.plugins.read().await;
+
+        if let Some(loaded_plugin) = plugins.get(name) {
+            Ok(loaded_plugin.path().clone())
+        } else {
+            Err(PluginError::PluginNotFound { name: name.to_string() }.into())
+        }
+    }
+
+    /// Get plugin file name by name
+    pub async fn get_plugin_file_name(&self, name: &str) -> DfResult<String> {
+        let plugins = self.plugins.read().await;
+
+        if let Some(loaded_plugin) = plugins.get(name) {
+            Ok(loaded_plugin.file_name()
+                .unwrap_or("unknown")
+                .to_string())
+        } else {
+            Err(PluginError::PluginNotFound { name: name.to_string() }.into())
+        }
+    }
+
+    /// Check if a plugin was loaded from a specific path
+    pub async fn is_plugin_from_path(&self, name: &str, path: &Path) -> DfResult<bool> {
+        let plugins = self.plugins.read().await;
+
+        if let Some(loaded_plugin) = plugins.get(name) {
+            Ok(loaded_plugin.is_from_path(path))
+        } else {
+            Err(PluginError::PluginNotFound { name: name.to_string() }.into())
+        }
+    }
+
+    /// Check if a plugin's library is still loaded
+    pub async fn is_plugin_library_loaded(&self, name: &str) -> DfResult<bool> {
+        let plugins = self.plugins.read().await;
+
+        if let Some(loaded_plugin) = plugins.get(name) {
+            Ok(loaded_plugin.is_library_loaded())
+        } else {
+            Err(PluginError::PluginNotFound { name: name.to_string() }.into())
+        }
+    }
+
     /// Get all loaded plugin names
     pub async fn get_loaded_plugins(&self) -> Vec<String> {
         let plugins = self.plugins.read().await;
@@ -645,6 +867,185 @@ impl Default for PluginManager {
     }
 }
 
+/// Helper functions for creating FFI-safe plugins
+pub mod ffi_helpers {
+    use super::*;
+    use tokio::runtime::Runtime;
+
+    /// Create a plugin instance with vtable for FFI usage
+    pub unsafe fn create_plugin_instance<T>(plugin: T) -> *mut PluginInstance
+    where
+        T: Plugin + 'static,
+    {
+        let boxed_plugin = Box::new(plugin);
+        let plugin_ptr = Box::into_raw(boxed_plugin) as *mut std::ffi::c_void;
+        
+        let vtable = Box::new(PluginVTable {
+            get_info: get_info_impl::<T>,
+            get_state: get_state_impl::<T>,
+            initialize: initialize_impl::<T>,
+            start: start_impl::<T>,
+            stop: stop_impl::<T>,
+            handle_event: handle_event_impl::<T>,
+            destroy: destroy_impl::<T>,
+        });
+        
+        let instance = Box::new(PluginInstance {
+            data: plugin_ptr,
+            vtable: Box::into_raw(vtable),
+        });
+        
+        Box::into_raw(instance)
+    }
+
+    unsafe extern "C" fn get_info_impl<T: Plugin>(data: *const std::ffi::c_void) -> *const PluginInfo {
+        let plugin = &*(data as *const T);
+        plugin.info() as *const PluginInfo
+    }
+
+    unsafe extern "C" fn get_state_impl<T: Plugin>(data: *const std::ffi::c_void) -> PluginState {
+        let plugin = &*(data as *const T);
+        plugin.state()
+    }
+
+    unsafe extern "C" fn initialize_impl<T: Plugin>(data: *mut std::ffi::c_void) -> i32 {
+        let plugin = &mut *(data as *mut T);
+        
+        // Create a new runtime for this operation
+        // In a real implementation, you might want to use a shared runtime
+        let rt = match Runtime::new() {
+            Ok(rt) => rt,
+            Err(_) => return -1,
+        };
+        
+        match rt.block_on(plugin.initialize()) {
+            Ok(()) => 0,
+            Err(_) => -1,
+        }
+    }
+
+    unsafe extern "C" fn start_impl<T: Plugin>(data: *mut std::ffi::c_void) -> i32 {
+        let plugin = &mut *(data as *mut T);
+        
+        let rt = match Runtime::new() {
+            Ok(rt) => rt,
+            Err(_) => return -1,
+        };
+        
+        match rt.block_on(plugin.start()) {
+            Ok(()) => 0,
+            Err(_) => -1,
+        }
+    }
+
+    unsafe extern "C" fn stop_impl<T: Plugin>(data: *mut std::ffi::c_void) -> i32 {
+        let plugin = &mut *(data as *mut T);
+        
+        let rt = match Runtime::new() {
+            Ok(rt) => rt,
+            Err(_) => return -1,
+        };
+        
+        match rt.block_on(plugin.stop()) {
+            Ok(()) => 0,
+            Err(_) => -1,
+        }
+    }
+
+    unsafe extern "C" fn handle_event_impl<T: Plugin>(
+        data: *mut std::ffi::c_void,
+        event: *const PluginEvent,
+    ) -> i32 {
+        let plugin = &mut *(data as *mut T);
+        let event = (*event).clone();
+        
+        let rt = match Runtime::new() {
+            Ok(rt) => rt,
+            Err(_) => return -1,
+        };
+        
+        match rt.block_on(plugin.handle_event(event)) {
+            Ok(()) => 0,
+            Err(_) => -1,
+        }
+    }
+
+    unsafe extern "C" fn destroy_impl<T: Plugin>(data: *mut std::ffi::c_void) {
+        if !data.is_null() {
+            let _ = Box::from_raw(data as *mut T);
+        }
+    }
+}
+
+/// Macro to simplify creating FFI-safe plugin entry points
+/// 
+/// # Example
+/// ```no_run
+/// use df_core::plugin::{Plugin, PluginInfo, PluginState};
+/// use df_core::error::DfResult;
+/// use df_core::export_plugin;
+/// use std::pin::Pin;
+/// use std::future::Future;
+/// 
+/// struct MyPlugin {
+///     info: PluginInfo,
+///     state: PluginState,
+/// }
+/// 
+/// impl MyPlugin {
+///     fn new() -> Self {
+///         Self {
+///             info: PluginInfo::new(
+///                 "my-plugin",
+///                 "1.0.0", 
+///                 "Example plugin",
+///                 "Example Author"
+///             ),
+///             state: PluginState::Loaded,
+///         }
+///     }
+/// }
+/// 
+/// impl Plugin for MyPlugin {
+///     fn info(&self) -> &PluginInfo { &self.info }
+///     fn state(&self) -> PluginState { self.state }
+///     
+///     fn initialize(&mut self) -> Pin<Box<dyn Future<Output = DfResult<()>> + Send + '_>> {
+///         Box::pin(async move {
+///             self.state = PluginState::Initialized;
+///             Ok(())
+///         })
+///     }
+///     
+///     fn start(&mut self) -> Pin<Box<dyn Future<Output = DfResult<()>> + Send + '_>> {
+///         Box::pin(async move {
+///             self.state = PluginState::Running;
+///             Ok(())
+///         })
+///     }
+///     
+///     fn stop(&mut self) -> Pin<Box<dyn Future<Output = DfResult<()>> + Send + '_>> {
+///         Box::pin(async move {
+///             self.state = PluginState::Stopped;
+///             Ok(())
+///         })
+///     }
+/// }
+/// 
+/// // Export the plugin using the macro
+/// export_plugin!(MyPlugin, MyPlugin::new());
+/// ```
+#[macro_export]
+macro_rules! export_plugin {
+    ($plugin_type:ty, $constructor:expr) => {
+        #[no_mangle]
+        pub unsafe extern "C" fn plugin_main() -> *mut $crate::plugin::PluginInstance {
+            let plugin = $constructor;
+            $crate::plugin::ffi_helpers::create_plugin_instance(plugin)
+        }
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -687,7 +1088,6 @@ mod tests {
         }
     }
 
-    #[async_trait]
     impl Plugin for MockPlugin {
         fn info(&self) -> &PluginInfo {
             &self.info
@@ -697,45 +1097,53 @@ mod tests {
             self.state
         }
 
-        async fn initialize(&mut self) -> DfResult<()> {
-            if self.initialized {
-                return Err(DfError::plugin(&self.info.name, "Already initialized"));
-            }
-            
-            self.state = PluginState::Initializing;
-            self.initialized = true;
-            self.state = PluginState::Initialized;
-            Ok(())
+        fn initialize(&mut self) -> Pin<Box<dyn Future<Output = DfResult<()>> + Send + '_>> {
+            Box::pin(async move {
+                if self.initialized {
+                    return Err(DfError::plugin(&self.info.name, "Already initialized"));
+                }
+                
+                self.state = PluginState::Initializing;
+                self.initialized = true;
+                self.state = PluginState::Initialized;
+                Ok(())
+            })
         }
 
-        async fn start(&mut self) -> DfResult<()> {
-            if !self.initialized {
-                return Err(DfError::plugin(&self.info.name, "Not initialized"));
-            }
-            if self.started {
-                return Err(DfError::plugin(&self.info.name, "Already started"));
-            }
-            
-            self.state = PluginState::Starting;
-            self.started = true;
-            self.state = PluginState::Running;
-            Ok(())
+        fn start(&mut self) -> Pin<Box<dyn Future<Output = DfResult<()>> + Send + '_>> {
+            Box::pin(async move {
+                if !self.initialized {
+                    return Err(DfError::plugin(&self.info.name, "Not initialized"));
+                }
+                if self.started {
+                    return Err(DfError::plugin(&self.info.name, "Already started"));
+                }
+                
+                self.state = PluginState::Starting;
+                self.started = true;
+                self.state = PluginState::Running;
+                Ok(())
+            })
         }
 
-        async fn stop(&mut self) -> DfResult<()> {
-            if !self.started {
-                return Err(DfError::plugin(&self.info.name, "Not started"));
-            }
-            
-            self.state = PluginState::Stopping;
-            self.started = false;
-            self.state = PluginState::Stopped;
-            Ok(())
+        fn stop(&mut self) -> Pin<Box<dyn Future<Output = DfResult<()>> + Send + '_>> {
+            Box::pin(async move {
+                if !self.started {
+                    return Err(DfError::plugin(&self.info.name, "Not started"));
+                }
+                
+                self.state = PluginState::Stopping;
+                self.started = false;
+                self.state = PluginState::Stopped;
+                Ok(())
+            })
         }
 
-        async fn handle_event(&mut self, event: PluginEvent) -> DfResult<()> {
-            self.events_received.push(event);
-            Ok(())
+        fn handle_event(&mut self, event: PluginEvent) -> Pin<Box<dyn Future<Output = DfResult<()>> + Send + '_>> {
+            Box::pin(async move {
+                self.events_received.push(event);
+                Ok(())
+            })
         }
     }
 
@@ -945,7 +1353,7 @@ mod tests {
             path: "/path/to/plugin".to_string(), 
             reason: "reason".to_string() 
         };
-        assert!(error.to_string().contains("Loading"));
+        assert!(error.to_string().contains("loading"));
 
         let error = PluginError::VersionMismatch { 
             required: "1.0".to_string(), 

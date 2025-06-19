@@ -2,18 +2,17 @@ use axum::{
     middleware,
     routing::{get, post, put, delete},
     Router,
-    Extension,
 };
 use sqlx::{sqlite::SqlitePoolOptions, Pool, Sqlite};
 use std::sync::Arc;
 use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
-use tracing::{info, warn};
+use tracing::info;
 
 use df_auth::{
     AuthConfig, AuthService, AuthServiceState,
-    auth_handlers::*, auth_middleware, require_permission, require_admin,
-    require_ownership_or_admin,
+    login, logout, register, refresh_token, change_password, get_profile, health_check,
+    auth_middleware, require_admin,
 };
 
 #[tokio::main]

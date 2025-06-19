@@ -40,6 +40,10 @@ pub struct FileInfo {
     pub encrypted: bool,
     /// Compression type if compressed
     pub compression: Option<String>,
+    /// Content length (alias for size for compatibility)
+    pub content_length: u64,
+    /// Last modified timestamp (alias for modified_at for compatibility)
+    pub last_modified: DateTime<Utc>,
 }
 
 impl FileInfo {
@@ -64,6 +68,8 @@ impl FileInfo {
             metadata: HashMap::new(),
             encrypted: false,
             compression: None,
+            content_length: 0,
+            last_modified: now,
         }
     }
 
@@ -78,6 +84,7 @@ impl FileInfo {
     /// Set file size
     pub fn with_size(mut self, size: u64) -> Self {
         self.size = size;
+        self.content_length = size;
         self
     }
 
@@ -95,6 +102,7 @@ impl FileInfo {
     ) -> Self {
         self.created_at = created;
         self.modified_at = modified;
+        self.last_modified = modified;
         self
     }
 
@@ -206,7 +214,7 @@ impl FileInfo {
             });
         }
 
-        if let (Some(checksum), None) = (&self.checksum, &self.checksum_algorithm) {
+        if let (Some(_checksum), None) = (&self.checksum, &self.checksum_algorithm) {
             return Err(FileServiceError::InternalError {
                 message: "Checksum provided without algorithm".to_string(),
             });

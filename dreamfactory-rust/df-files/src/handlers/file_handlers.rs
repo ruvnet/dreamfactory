@@ -1,5 +1,5 @@
 use crate::models::{
-    error::{FileResult, FileServiceError},
+    error::FileServiceError,
     file_operation::{DownloadOptions, UploadOptions},
 };
 use crate::traits::FileService;
@@ -13,7 +13,6 @@ use axum::{
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
-use tokio_util::io::ReaderStream;
 
 /// File upload request
 #[derive(Debug, Deserialize)]

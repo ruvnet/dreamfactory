@@ -1,4 +1,3 @@
-use crate::models::error::FileResult;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use futures::Stream;
@@ -186,6 +185,22 @@ pub struct ListOptions {
     pub include_metadata: bool,
     /// Include directory sizes (may be expensive)
     pub include_directory_sizes: bool,
+    /// Maximum recursion depth
+    pub max_depth: Option<u32>,
+    /// Offset for pagination
+    pub offset: Option<usize>,
+    /// Name pattern for filtering
+    pub name_pattern: Option<String>,
+    /// Content type filter
+    pub content_type_filter: Option<String>,
+    /// Minimum file size filter
+    pub min_size: Option<u64>,
+    /// Maximum file size filter
+    pub max_size: Option<u64>,
+    /// Only show files modified after this date
+    pub modified_after: Option<DateTime<Utc>>,
+    /// Only show files modified before this date
+    pub modified_before: Option<DateTime<Utc>>,
 }
 
 impl Default for ListOptions {
@@ -200,6 +215,14 @@ impl Default for ListOptions {
             sort_order: SortOrder::Ascending,
             include_metadata: true,
             include_directory_sizes: false,
+            max_depth: None,
+            offset: None,
+            name_pattern: None,
+            content_type_filter: None,
+            min_size: None,
+            max_size: None,
+            modified_after: None,
+            modified_before: None,
         }
     }
 }

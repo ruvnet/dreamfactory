@@ -25,8 +25,7 @@ impl PasswordService {
         
         let salt = SaltString::generate(&mut OsRng);
         let password_hash = self.argon2
-            .hash_password(peppered_password.as_bytes(), &salt)
-            .map_err(AuthError::PasswordHash)?;
+            .hash_password(peppered_password.as_bytes(), &salt)?;
 
         Ok(password_hash.to_string())
     }
@@ -35,8 +34,7 @@ impl PasswordService {
         // Add pepper to password for verification
         let peppered_password = format!("{}{}", password, self.pepper);
         
-        let parsed_hash = PasswordHash::new(hash)
-            .map_err(AuthError::PasswordHash)?;
+        let parsed_hash = PasswordHash::new(hash)?;
 
         Ok(self.argon2
             .verify_password(peppered_password.as_bytes(), &parsed_hash)
@@ -101,15 +99,13 @@ impl PasswordService {
         // Use same hashing mechanism as passwords but without pepper
         let salt = SaltString::generate(&mut OsRng);
         let key_hash = self.argon2
-            .hash_password(api_key.as_bytes(), &salt)
-            .map_err(AuthError::PasswordHash)?;
+            .hash_password(api_key.as_bytes(), &salt)?;
 
         Ok(key_hash.to_string())
     }
 
     pub fn verify_api_key(&self, api_key: &str, hash: &str) -> Result<bool> {
-        let parsed_hash = PasswordHash::new(hash)
-            .map_err(AuthError::PasswordHash)?;
+        let parsed_hash = PasswordHash::new(hash)?;
 
         Ok(self.argon2
             .verify_password(api_key.as_bytes(), &parsed_hash)

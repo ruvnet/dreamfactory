@@ -5,7 +5,7 @@ use crate::models::{
 use crate::storage::{
     LocalStorageProvider, S3StorageProvider, AzureBlobStorageProvider, GoogleCloudStorageProvider,
 };
-use crate::traits::FileService;
+use crate::traits::{FileService, StorageProvider};
 use std::sync::Arc;
 
 /// Factory for creating file service instances

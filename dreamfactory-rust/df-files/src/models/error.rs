@@ -151,9 +151,6 @@ impl From<object_store::Error> for FileServiceError {
             object_store::Error::AlreadyExists { path, .. } => FileServiceError::FileAlreadyExists {
                 path: path.to_string(),
             },
-            object_store::Error::Unauthenticated { .. } => FileServiceError::AuthenticationError {
-                message: error.to_string(),
-            },
             _ => FileServiceError::CloudStorageError {
                 provider: "object_store".to_string(),
                 message: error.to_string(),

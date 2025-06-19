@@ -1,5 +1,5 @@
 use crate::models::error::{FileResult, FileServiceError};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Utility functions for path manipulation and validation
 pub struct PathUtils;
@@ -117,7 +117,7 @@ impl PathUtils {
 
         // Ensure parent path ends with / for proper prefix checking
         let parent_with_slash = if normalized_parent.ends_with('/') {
-            normalized_parent
+            normalized_parent.clone()
         } else {
             format!("{}/", normalized_parent)
         };
@@ -226,7 +226,7 @@ impl PathUtils {
         let stem = path_obj.file_stem().and_then(|s| s.to_str()).unwrap_or("");
         let extension = path_obj.extension().and_then(|s| s.to_str()).unwrap_or("");
 
-        let mut counter = 1;
+        let counter = 1;
         loop {
             let new_filename = if extension.is_empty() {
                 if counter == 1 {

@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::env;
+use dotenvy;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthConfig {
@@ -52,7 +53,7 @@ impl Default for AuthConfig {
 
 impl AuthConfig {
     pub fn new() -> Self {
-        dotenv::dotenv().ok();
+        dotenvy::dotenv().ok();
         Self::default()
     }
 

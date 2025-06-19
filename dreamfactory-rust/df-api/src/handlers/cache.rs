@@ -2,6 +2,7 @@ use crate::routing::{ApiRoute, ServiceHandler};
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::{RwLock, LazyLock};
 use tracing::{info, warn, instrument};
 
 /// Cache service handler - implements /api/v2/cache/* endpoints
@@ -9,27 +10,19 @@ pub struct CacheServiceHandler;
 
 // In-memory cache for testing purposes
 // In production, this would integrate with Redis or another cache backend
-static mut CACHE_STORE: Option<HashMap<String, String>> = None;
-static CACHE_INIT: std::sync::Once = std::sync::Once::new();
+static CACHE_STORE: LazyLock<RwLock<HashMap<String, String>>> = LazyLock::new(|| {
+    RwLock::new(HashMap::new())
+});
 
 impl CacheServiceHandler {
     pub fn new() -> Self {
         Self
     }
 
-    fn get_cache_store() -> &'static mut HashMap<String, String> {
-        unsafe {
-            CACHE_INIT.call_once(|| {
-                CACHE_STORE = Some(HashMap::new());
-            });
-            CACHE_STORE.as_mut().unwrap()
-        }
-    }
-
     /// Handle GET /api/v2/cache/{key}
     #[instrument(skip(self))]
     async fn handle_get(&self, key: &str) -> Result<Value> {
-        let cache = Self::get_cache_store();
+        let cache = CACHE_STORE.read().unwrap();
         
         match cache.get(key) {
             Some(value) => {
@@ -55,7 +48,7 @@ impl CacheServiceHandler {
             None => return Err(anyhow::anyhow!("Request body required for cache set operation")),
         };
 
-        let cache = Self::get_cache_store();
+        let mut cache = CACHE_STORE.write().unwrap();
         cache.insert(key.to_string(), value.clone());
         
         info!("Cache set for key: {}", key);
@@ -69,10 +62,12 @@ impl CacheServiceHandler {
     /// Handle PUT /api/v2/cache/{key} - Update value
     #[instrument(skip(self, body))]
     async fn handle_put(&self, key: &str, body: Option<Vec<u8>>) -> Result<Value> {
-        let cache = Self::get_cache_store();
-        
-        if !cache.contains_key(key) {
-            return Err(anyhow::anyhow!("Key '{}' not found in cache", key));
+        // Check if key exists first
+        {
+            let cache = CACHE_STORE.read().unwrap();
+            if !cache.contains_key(key) {
+                return Err(anyhow::anyhow!("Key '{}' not found in cache", key));
+            }
         }
 
         let value = match body {
@@ -80,6 +75,7 @@ impl CacheServiceHandler {
             None => return Err(anyhow::anyhow!("Request body required for cache update operation")),
         };
 
+        let mut cache = CACHE_STORE.write().unwrap();
         cache.insert(key.to_string(), value.clone());
         
         info!("Cache updated for key: {}", key);
@@ -93,7 +89,7 @@ impl CacheServiceHandler {
     /// Handle DELETE /api/v2/cache/{key}
     #[instrument(skip(self))]
     async fn handle_delete(&self, key: &str) -> Result<Value> {
-        let cache = Self::get_cache_store();
+        let mut cache = CACHE_STORE.write().unwrap();
         
         match cache.remove(key) {
             Some(_) => {
@@ -114,14 +110,16 @@ impl CacheServiceHandler {
     /// Handle GET /api/v2/cache - List all cache keys
     #[instrument(skip(self))]
     async fn handle_list(&self) -> Result<Value> {
-        let cache = Self::get_cache_store();
-        let keys: Vec<String> = cache.keys().cloned().collect();
+        let cache = CACHE_STORE.read().unwrap();
+        let keys_with_sizes: Vec<(String, usize)> = cache.iter()
+            .map(|(k, v)| (k.clone(), v.len()))
+            .collect();
         
-        info!("Retrieved {} cache keys", keys.len());
+        info!("Retrieved {} cache keys", keys_with_sizes.len());
         Ok(json!({
-            "resource": keys.into_iter().map(|key| json!({
+            "resource": keys_with_sizes.into_iter().map(|(key, size)| json!({
                 "key": key,
-                "size": cache.get(&key).map(|v| v.len()).unwrap_or(0)
+                "size": size
             })).collect::<Vec<_>>()
         }))
     }
@@ -129,7 +127,7 @@ impl CacheServiceHandler {
     /// Handle POST /api/v2/cache/_flush - Clear all cache
     #[instrument(skip(self))]
     async fn handle_flush(&self) -> Result<Value> {
-        let cache = Self::get_cache_store();
+        let mut cache = CACHE_STORE.write().unwrap();
         let count = cache.len();
         cache.clear();
         
@@ -141,8 +139,9 @@ impl CacheServiceHandler {
     }
 }
 
+#[async_trait::async_trait]
 impl ServiceHandler for CacheServiceHandler {
-    #[instrument(skip(self, query_params, body))] 
+    #[instrument(skip(self, _query_params, body))] 
     async fn handle_request(
         &self,
         route: &ApiRoute,

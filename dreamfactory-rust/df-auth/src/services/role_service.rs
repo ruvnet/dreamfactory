@@ -1,8 +1,8 @@
 use crate::{
-    AuthError, Result, Role, CreateRoleRequest, UpdateRoleRequest, AssignRoleRequest
+    AuthError, Result, Role, CreateRoleRequest, UpdateRoleRequest
 };
 use chrono::Utc;
-use sqlx::{Pool, Sqlite};
+use sqlx::{Pool, Sqlite, Row};
 use uuid::Uuid;
 use validator::Validate;
 
@@ -27,22 +27,22 @@ impl RoleService {
         let role = Role::new(request.name, request.description, created_by_id);
 
         // Insert role
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO roles (
                 id, name, description, is_active, created_date, last_modified_date,
                 created_by_id, last_modified_by_id
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            "#,
-            role.id,
-            role.name,
-            role.description,
-            role.is_active,
-            role.created_date,
-            role.last_modified_date,
-            role.created_by_id,
-            role.last_modified_by_id
+            "#
         )
+        .bind(role.id)
+        .bind(&role.name)
+        .bind(&role.description)
+        .bind(role.is_active)
+        .bind(role.created_date)
+        .bind(role.last_modified_date)
+        .bind(role.created_by_id)
+        .bind(role.last_modified_by_id)
         .execute(&self.db)
         .await
         .map_err(AuthError::Database)?;
@@ -58,11 +58,10 @@ impl RoleService {
     }
 
     pub async fn get_role_by_id(&self, role_id: Uuid) -> Result<Role> {
-        let role = sqlx::query_as!(
-            Role,
-            "SELECT * FROM roles WHERE id = ?",
-            role_id
+        let role = sqlx::query_as::<_, Role>(
+            "SELECT * FROM roles WHERE id = ?"
         )
+        .bind(role_id)
         .fetch_one(&self.db)
         .await
         .map_err(|_| AuthError::RoleNotFound)?;
@@ -71,11 +70,10 @@ impl RoleService {
     }
 
     pub async fn get_role_by_name(&self, name: &str) -> Result<Role> {
-        let role = sqlx::query_as!(
-            Role,
-            "SELECT * FROM roles WHERE name = ?",
-            name
+        let role = sqlx::query_as::<_, Role>(
+            "SELECT * FROM roles WHERE name = ?"
         )
+        .bind(name)
         .fetch_one(&self.db)
         .await
         .map_err(|_| AuthError::RoleNotFound)?;
@@ -110,19 +108,19 @@ impl RoleService {
         role.last_modified_by_id = updated_by_id;
 
         // Update in database
-        sqlx::query!(
+        sqlx::query(
             r#"
             UPDATE roles SET
                 name = ?, description = ?, is_active = ?, last_modified_date = ?, last_modified_by_id = ?
             WHERE id = ?
-            "#,
-            role.name,
-            role.description,
-            role.is_active,
-            role.last_modified_date,
-            role.last_modified_by_id,
-            role.id
+            "#
         )
+        .bind(&role.name)
+        .bind(&role.description)
+        .bind(role.is_active)
+        .bind(role.last_modified_date)
+        .bind(role.last_modified_by_id)
+        .bind(role.id)
         .execute(&self.db)
         .await
         .map_err(AuthError::Database)?;
@@ -130,7 +128,8 @@ impl RoleService {
         // Update permissions if provided
         if let Some(permission_ids) = request.permission_ids {
             // Remove existing permissions
-            sqlx::query!("DELETE FROM role_permissions WHERE role_id = ?", role_id)
+            sqlx::query("DELETE FROM role_permissions WHERE role_id = ?")
+                .bind(role_id)
                 .execute(&self.db)
                 .await
                 .map_err(AuthError::Database)?;
@@ -146,23 +145,28 @@ impl RoleService {
 
     pub async fn delete_role(&self, role_id: Uuid) -> Result<()> {
         // Check if role is assigned to any users
-        let user_count = sqlx::query!("SELECT COUNT(*) as count FROM user_roles WHERE role_id = ?", role_id)
+        let row = sqlx::query("SELECT COUNT(*) as count FROM user_roles WHERE role_id = ?")
+            .bind(role_id)
             .fetch_one(&self.db)
             .await
             .map_err(AuthError::Database)?;
 
-        if user_count.count > 0 {
+        let user_count: i64 = row.get("count");
+
+        if user_count > 0 {
             return Err(AuthError::Validation("Cannot delete role assigned to users".to_string()));
         }
 
         // Delete role permissions first
-        sqlx::query!("DELETE FROM role_permissions WHERE role_id = ?", role_id)
+        sqlx::query("DELETE FROM role_permissions WHERE role_id = ?")
+            .bind(role_id)
             .execute(&self.db)
             .await
             .map_err(AuthError::Database)?;
 
         // Delete role
-        sqlx::query!("DELETE FROM roles WHERE id = ?", role_id)
+        sqlx::query("DELETE FROM roles WHERE id = ?")
+            .bind(role_id)
             .execute(&self.db)
             .await
             .map_err(AuthError::Database)?;
@@ -174,12 +178,11 @@ impl RoleService {
         let limit = limit.unwrap_or(50);
         let offset = offset.unwrap_or(0);
 
-        let roles = sqlx::query_as!(
-            Role,
-            "SELECT * FROM roles ORDER BY name LIMIT ? OFFSET ?",
-            limit,
-            offset
+        let roles = sqlx::query_as::<_, Role>(
+            "SELECT * FROM roles ORDER BY name LIMIT ? OFFSET ?"
         )
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.db)
         .await
         .map_err(AuthError::Database)?;
@@ -188,17 +191,16 @@ impl RoleService {
     }
 
     pub async fn get_role_permissions(&self, role_id: Uuid) -> Result<Vec<crate::Permission>> {
-        let permissions = sqlx::query_as!(
-            crate::Permission,
+        let permissions = sqlx::query_as::<_, crate::Permission>(
             r#"
             SELECT p.*
             FROM permissions p
             JOIN role_permissions rp ON p.id = rp.permission_id
             WHERE rp.role_id = ? AND p.is_active = TRUE
             ORDER BY p.name
-            "#,
-            role_id
+            "#
         )
+        .bind(role_id)
         .fetch_all(&self.db)
         .await
         .map_err(AuthError::Database)?;
@@ -208,11 +210,11 @@ impl RoleService {
 
     pub async fn assign_permission_to_role(&self, role_id: Uuid, permission_id: Uuid, assigned_by_id: Option<Uuid>) -> Result<()> {
         // Check if assignment already exists
-        let existing = sqlx::query!(
-            "SELECT id FROM role_permissions WHERE role_id = ? AND permission_id = ?",
-            role_id,
-            permission_id
+        let existing = sqlx::query(
+            "SELECT id FROM role_permissions WHERE role_id = ? AND permission_id = ?"
         )
+        .bind(role_id)
+        .bind(permission_id)
         .fetch_optional(&self.db)
         .await
         .map_err(AuthError::Database)?;
@@ -224,14 +226,14 @@ impl RoleService {
         let assignment_id = Uuid::new_v4();
         let created_date = Utc::now();
 
-        sqlx::query!(
-            "INSERT INTO role_permissions (id, role_id, permission_id, created_date, created_by_id) VALUES (?, ?, ?, ?, ?)",
-            assignment_id,
-            role_id,
-            permission_id,
-            created_date,
-            assigned_by_id
+        sqlx::query(
+            "INSERT INTO role_permissions (id, role_id, permission_id, created_date, created_by_id) VALUES (?, ?, ?, ?, ?)"
         )
+        .bind(assignment_id)
+        .bind(role_id)
+        .bind(permission_id)
+        .bind(created_date)
+        .bind(assigned_by_id)
         .execute(&self.db)
         .await
         .map_err(AuthError::Database)?;
@@ -240,11 +242,11 @@ impl RoleService {
     }
 
     pub async fn remove_permission_from_role(&self, role_id: Uuid, permission_id: Uuid) -> Result<()> {
-        sqlx::query!(
-            "DELETE FROM role_permissions WHERE role_id = ? AND permission_id = ?",
-            role_id,
-            permission_id
+        sqlx::query(
+            "DELETE FROM role_permissions WHERE role_id = ? AND permission_id = ?"
         )
+        .bind(role_id)
+        .bind(permission_id)
         .execute(&self.db)
         .await
         .map_err(AuthError::Database)?;
@@ -253,17 +255,16 @@ impl RoleService {
     }
 
     pub async fn get_users_with_role(&self, role_id: Uuid) -> Result<Vec<crate::User>> {
-        let users = sqlx::query_as!(
-            crate::User,
+        let users = sqlx::query_as::<_, crate::User>(
             r#"
             SELECT u.*
             FROM users u
             JOIN user_roles ur ON u.id = ur.user_id
             WHERE ur.role_id = ? AND u.is_active = TRUE
             ORDER BY u.email
-            "#,
-            role_id
+            "#
         )
+        .bind(role_id)
         .fetch_all(&self.db)
         .await
         .map_err(AuthError::Database)?;

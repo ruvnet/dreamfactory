@@ -39,7 +39,7 @@ pub struct UserProfile {
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct CreateUserRequest {
-    #[validate(email, message = "Invalid email format")]
+    #[validate(email(message = "Invalid email format"))]
     pub email: String,
     
     pub username: Option<String>,
@@ -54,7 +54,7 @@ pub struct CreateUserRequest {
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct UpdateUserRequest {
-    #[validate(email, message = "Invalid email format")]
+    #[validate(email(message = "Invalid email format"))]
     pub email: Option<String>,
     
     pub username: Option<String>,
@@ -78,7 +78,7 @@ pub struct ChangePasswordRequest {
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct RegisterRequest {
-    #[validate(email, message = "Invalid email format")]
+    #[validate(email(message = "Invalid email format"))]
     pub email: String,
     
     pub username: Option<String>,

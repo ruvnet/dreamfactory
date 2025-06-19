@@ -17,7 +17,7 @@ pub enum AuthError {
     Jwt(#[from] jsonwebtoken::errors::Error),
 
     #[error("Password hashing error: {0}")]
-    PasswordHash(#[from] argon2::password_hash::Error),
+    PasswordHash(String),
 
     #[error("Validation error: {0}")]
     Validation(String),
@@ -60,6 +60,12 @@ pub enum AuthError {
 
     #[error("Internal server error: {0}")]
     Internal(String),
+}
+
+impl From<argon2::password_hash::Error> for AuthError {
+    fn from(err: argon2::password_hash::Error) -> Self {
+        AuthError::PasswordHash(format!("{:?}", err))
+    }
 }
 
 impl IntoResponse for AuthError {
